@@ -17,6 +17,8 @@ export interface DshContext extends Context {
 export interface CodeModeConfig {
   /** 面向模型的工具名称，默认 'codemode' */
   toolName?: string;
+  /** 沙箱执行引擎：'vm' (V8 原生高速隔离沙箱，默认) | 'quickjs' (WASM 纯内存沙箱) */
+  engine?: 'vm' | 'quickjs';
   /** 返回给上下文的最大字符上限，超出截断，默认 50,000 */
   maxResultChars?: number;
   /** 单次脚本执行的硬超时（毫秒），默认 60,000 */
@@ -38,6 +40,7 @@ export interface ToolExecutionBridge {
 export interface ScriptExecutionOptions {
   script: string;
   bridge: ToolExecutionBridge;
+  engine?: 'vm' | 'quickjs';
   maxResultChars?: number;
   timeoutMs?: number;
 }

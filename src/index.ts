@@ -1,6 +1,6 @@
 import type { DshContext, CodeModeConfig, CodeModeArgs } from './types.js';
 import { createDshToolBridge } from './tool-bridge.js';
-import { executeInQuickJsSandbox } from './sandbox.js';
+import { executeCodeModeScript } from './sandbox.js';
 import { formatExecutionResult } from './truncator.js';
 
 export const name = 'dsh-plugin-codemode';
@@ -56,9 +56,10 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         currentToolName: toolName,
       });
 
-      const outcome = await executeInQuickJsSandbox({
+      const outcome = await executeCodeModeScript({
         script: args.script,
         bridge,
+        engine: config.engine,
         maxResultChars,
         timeoutMs,
       });

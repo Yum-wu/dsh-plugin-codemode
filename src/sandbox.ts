@@ -1,3 +1,4 @@
+import vm from 'node:vm';
 import { newAsyncContext, type QuickJSAsyncContext, type QuickJSHandle } from 'quickjs-emscripten';
 import type { ScriptExecutionOptions, ScriptExecutionOutcome } from './types.js';
 
@@ -5,13 +6,13 @@ import type { ScriptExecutionOptions, ScriptExecutionOutcome } from './types.js'
  * 驱动 QuickJS 微任务队列并等待异步执行完成或超时
  */
 async function waitForPromise(
-  vm: QuickJSAsyncContext,
+  qvm: QuickJSAsyncContext,
   promiseHandle: QuickJSHandle,
   timeoutMs: number
 ): Promise<{ success: boolean; handle: QuickJSHandle }> {
   const start = Date.now();
   while (true) {
-    const state = vm.getPromiseState(promiseHandle);
+    const state = qvm.getPromiseState(promiseHandle);
     if (state.type === 'fulfilled') {
       return { success: true, handle: state.value };
     }
@@ -22,10 +23,10 @@ async function waitForPromise(
       throw new Error(`Script execution exceeded hard timeout limit of ${timeoutMs}ms`);
     }
 
-    if (vm.runtime.hasPendingJob()) {
-      const res = await vm.runtime.executePendingJobs();
+    if (qvm.runtime.hasPendingJob()) {
+      const res = await qvm.runtime.executePendingJobs();
       if (res.error) {
-        throw new Error('QuickJS runtime pending job error: ' + vm.dump(res.error));
+        throw new Error('QuickJS runtime pending job error: ' + qvm.dump(res.error));
       }
     } else {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -34,7 +35,102 @@ async function waitForPromise(
 }
 
 /**
- * 在独立的 QuickJS-WASM 内存沙箱中执行 JS 代码
+ * 在 V8 原生 VM 隔离上下文中执行脚本 (极速并发、高吞吐、对齐 DSH PTC 工作流架构)
+ */
+export async function executeInVmSandbox(
+  options: ScriptExecutionOptions
+): Promise<ScriptExecutionOutcome> {
+  const startTime = Date.now();
+  const logs: string[] = [];
+  const timeoutMs = options.timeoutMs ?? 60000;
+
+  try {
+    const toolProxy = new Proxy(
+      {},
+      {
+        get(_, prop) {
+          const toolName = String(prop);
+          return async (args: Record<string, unknown> = {}) => {
+            return await options.bridge.executeTool(toolName, args);
+          };
+        },
+      }
+    );
+
+    const logSink = (...args: any[]) => {
+      logs.push(
+        args.map((x) => (typeof x === 'object' && x !== null ? JSON.stringify(x) : String(x))).join(' ')
+      );
+    };
+
+    const sandbox = {
+      tools: toolProxy,
+      console: {
+        log: logSink,
+        info: logSink,
+        warn: logSink,
+        error: logSink,
+      },
+      text: (val: any) => {
+        logs.push(typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val));
+      },
+      Promise,
+      JSON,
+      Math,
+      Date,
+      Array,
+      Object,
+      String,
+      Number,
+      Boolean,
+      RegExp,
+      Map,
+      Set,
+      parseInt,
+      parseFloat,
+      isNaN,
+      isFinite,
+    };
+
+    const context = vm.createContext(sandbox);
+    const wrapped = `(async () => {\n${options.script}\n})()`;
+    const scriptObj = new vm.Script(wrapped, {
+      filename: 'codemode:main',
+      lineOffset: -1,
+    });
+
+    const runPromise = scriptObj.runInContext(context, {
+      timeout: timeoutMs,
+    });
+
+    const returnValue = await Promise.race([
+      runPromise,
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Script execution exceeded hard timeout limit of ${timeoutMs}ms`)),
+          timeoutMs
+        )
+      ),
+    ]);
+
+    return {
+      success: true,
+      logs,
+      returnValue,
+      wallTimeMs: Date.now() - startTime,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      logs,
+      error: error?.message || String(error),
+      wallTimeMs: Date.now() - startTime,
+    };
+  }
+}
+
+/**
+ * 在 QuickJS-WASM 纯内存沙箱中执行 JS 代码 (WASM 强沙箱)
  */
 export async function executeInQuickJsSandbox(
   options: ScriptExecutionOptions
@@ -43,44 +139,44 @@ export async function executeInQuickJsSandbox(
   const logs: string[] = [];
   const timeoutMs = options.timeoutMs ?? 60000;
 
-  let vm: QuickJSAsyncContext | undefined;
+  let qvm: QuickJSAsyncContext | undefined;
   try {
-    vm = await newAsyncContext();
+    qvm = await newAsyncContext();
 
     // 1. 注入 console.log / console.info / console.warn / console.error
-    const logFn = vm.newFunction('__log', (...args) => {
-      const nativeArgs = args.map((a) => vm!.dump(a));
+    const logFn = qvm.newFunction('__log', (...args) => {
+      const nativeArgs = args.map((a) => qvm!.dump(a));
       const line = nativeArgs
         .map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x)))
         .join(' ');
       logs.push(line);
     });
 
-    const consoleObj = vm.newObject();
-    vm.setProp(consoleObj, 'log', logFn);
-    vm.setProp(consoleObj, 'info', logFn);
-    vm.setProp(consoleObj, 'warn', logFn);
-    vm.setProp(consoleObj, 'error', logFn);
-    vm.setProp(vm.global, 'console', consoleObj);
+    const consoleObj = qvm.newObject();
+    qvm.setProp(consoleObj, 'log', logFn);
+    qvm.setProp(consoleObj, 'info', logFn);
+    qvm.setProp(consoleObj, 'warn', logFn);
+    qvm.setProp(consoleObj, 'error', logFn);
+    qvm.setProp(qvm.global, 'console', consoleObj);
     logFn.dispose();
     consoleObj.dispose();
 
     // 注入快捷 text() 帮助函数
-    const textFn = vm.newFunction('text', (valHandle) => {
-      const val = vm!.dump(valHandle);
+    const textFn = qvm.newFunction('text', (valHandle) => {
+      const val = qvm!.dump(valHandle);
       logs.push(typeof val === 'object' ? JSON.stringify(val) : String(val));
     });
-    vm.setProp(vm.global, 'text', textFn);
+    qvm.setProp(qvm.global, 'text', textFn);
     textFn.dispose();
 
     // 2. 注入底层宿主工具调用器 __call_host_tool
-    const callHostToolFn = vm.newAsyncifiedFunction(
+    const callHostToolFn = qvm.newAsyncifiedFunction(
       '__call_host_tool',
       async (nameHandle, argsJsonHandle) => {
-        const toolName = vm!.getString(nameHandle);
+        const toolName = qvm!.getString(nameHandle);
         let parsedArgs: Record<string, unknown> = {};
         try {
-          const rawArgs = vm!.getString(argsJsonHandle);
+          const rawArgs = qvm!.getString(argsJsonHandle);
           if (rawArgs) {
             parsedArgs = JSON.parse(rawArgs);
           }
@@ -91,20 +187,20 @@ export async function executeInQuickJsSandbox(
         try {
           const result = await options.bridge.executeTool(toolName, parsedArgs);
           const serialized = JSON.stringify({ ok: true, data: result });
-          return vm!.newString(serialized);
+          return qvm!.newString(serialized);
         } catch (err: any) {
           const serialized = JSON.stringify({
             ok: false,
             error: err?.message || String(err),
           });
-          return vm!.newString(serialized);
+          return qvm!.newString(serialized);
         }
       }
     );
-    vm.setProp(vm.global, '__call_host_tool', callHostToolFn);
+    qvm.setProp(qvm.global, '__call_host_tool', callHostToolFn);
     callHostToolFn.dispose();
 
-    // 3. 构造沙箱内的 tools Proxy 对象与支持工具名安全下划线转换
+    // 3. 构造沙箱内的 tools Proxy 对象
     const initProxyScript = `
       globalThis.tools = new Proxy({}, {
         get(_, prop) {
@@ -120,25 +216,24 @@ export async function executeInQuickJsSandbox(
         }
       });
     `;
-    const initRes = vm.evalCode(initProxyScript);
-    vm.unwrapResult(initRes).dispose();
+    const initRes = qvm.evalCode(initProxyScript);
+    qvm.unwrapResult(initRes).dispose();
 
     // 4. 包装用户代码并执行
-    // 将其包裹在一个 async IIFE 中，支持顶层 await / return
     const wrappedScript = `(async () => {\n${options.script}\n})()`;
-    const evalRes = await vm.evalCodeAsync(wrappedScript);
-    const promiseHandle = vm.unwrapResult(evalRes);
+    const evalRes = await qvm.evalCodeAsync(wrappedScript);
+    const promiseHandle = qvm.unwrapResult(evalRes);
 
-    const { success, handle } = await waitForPromise(vm, promiseHandle, timeoutMs);
+    const { success, handle } = await waitForPromise(qvm, promiseHandle, timeoutMs);
     promiseHandle.dispose();
 
     let returnValue: unknown = undefined;
     let errorMessage: string | undefined = undefined;
 
     if (success) {
-      returnValue = vm.dump(handle);
+      returnValue = qvm.dump(handle);
     } else {
-      const dumped = vm.dump(handle);
+      const dumped = qvm.dump(handle);
       errorMessage =
         typeof dumped === 'object' && dumped !== null && 'message' in dumped
           ? String((dumped as any).message)
@@ -161,8 +256,20 @@ export async function executeInQuickJsSandbox(
       wallTimeMs: Date.now() - startTime,
     };
   } finally {
-    if (vm && vm.alive) {
-      vm.dispose();
+    if (qvm && qvm.alive) {
+      qvm.dispose();
     }
   }
+}
+
+/**
+ * 统一沙箱执行入口，默认走原生 VM 高速引擎
+ */
+export async function executeCodeModeScript(
+  options: ScriptExecutionOptions
+): Promise<ScriptExecutionOutcome> {
+  if (options.engine === 'quickjs') {
+    return await executeInQuickJsSandbox(options);
+  }
+  return await executeInVmSandbox(options);
 }
