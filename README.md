@@ -1,5 +1,6 @@
 # dsh-plugin-codemode
 
+[![npm version](https://img.shields.io/npm/v/dsh-plugin-codemode.svg)](https://www.npmjs.com/package/dsh-plugin-codemode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: DeepSeek Harness](https://img.shields.io/badge/Platform-DeepSeek%20Harness-black.svg)](https://github.com/deepseek-ai/deepseek-harness)
 [![Tests: Passing](https://img.shields.io/badge/Tests-7%2F7%20Pass-brightgreen.svg)]()
@@ -130,7 +131,15 @@ return topIssues;
 
 ## 🚀 Installation & Setup
 
-### 1. Clone & Build
+### Option A: Install from npm (Recommended)
+
+In your DSH profile directory (e.g. `~/.dsh/profiles/web`):
+```bash
+pnpm add dsh-plugin-codemode
+# or: npm install dsh-plugin-codemode
+```
+
+### Option B: Install from Source (Development)
 ```bash
 git clone https://github.com/Yum-wu/dsh-plugin-codemode.git
 cd dsh-plugin-codemode
@@ -147,7 +156,7 @@ Link into your DSH web profile (`~/.dsh/profiles/web/package.json`):
 }
 ```
 
-### 2. Enable in Profile Patch
+### Enable in Profile Patch (`cordis.patch.yml`)
 Add to `~/.dsh/profiles/web/cordis.patch.yml`:
 ```yaml
 - insert:

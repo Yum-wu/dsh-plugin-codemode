@@ -1,5 +1,6 @@
 # dsh-plugin-codemode (中文文档)
 
+[![npm version](https://img.shields.io/npm/v/dsh-plugin-codemode.svg)](https://www.npmjs.com/package/dsh-plugin-codemode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: DeepSeek Harness](https://img.shields.io/badge/Platform-DeepSeek%20Harness-black.svg)](https://github.com/deepseek-ai/deepseek-harness)
 [![Tests: Passing](https://img.shields.io/badge/Tests-7%2F7%20Pass-brightgreen.svg)]()
@@ -131,7 +132,15 @@ return prs.map(pr => ({
 
 ## 🚀 安装与启用
 
-### 1. 克隆与构建
+### 方式 A：通过 npm 安装（推荐）
+
+进入你的 DSH profile 目录（如 `~/.dsh/profiles/web`）：
+```bash
+pnpm add dsh-plugin-codemode
+# 或: npm install dsh-plugin-codemode
+```
+
+### 方式 B：源码本地开发安装
 ```bash
 git clone https://github.com/Yum-wu/dsh-plugin-codemode.git
 cd dsh-plugin-codemode
@@ -148,7 +157,7 @@ npm run build
 }
 ```
 
-### 2. 在 `cordis.patch.yml` 中挂载
+### 挂载到配置 (`cordis.patch.yml`)
 编辑 `~/.dsh/profiles/web/cordis.patch.yml` 添加挂载项：
 ```yaml
 - insert:
