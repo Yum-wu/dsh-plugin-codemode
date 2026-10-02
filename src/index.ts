@@ -12,7 +12,7 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
   const timeoutMs = config.timeoutMs ?? 60000;
   const injectGuidance = config.injectGuidance !== false;
 
-  // 1. 向模型提示词注入使用指引
+  // 1. 向模型提示词注入强门禁编排硬规则
   if (injectGuidance && ctx.systemPrompt) {
     const order = typeof ctx.systemPrompt.getSectionOrder === 'function'
       ? ctx.systemPrompt.getSectionOrder('TOOL_WORKFLOW') || 25
@@ -21,11 +21,16 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
     ctx.systemPrompt.section({
       name: `tool:${toolName}`,
       order,
-      text: `## Code Mode (Programmatic Tool Calling) 指南
-当你需要执行批量、并发或有数据过滤依赖的操作时（如检查多个文件、批量调用 MCP 工具并汇总结果），优先调用 \`${toolName}\` 编写纯 JavaScript 脚本执行，避免多轮 ReAct 对话往返。
+      text: `## 【强制门禁】Code Mode (Programmatic Tool Calling) 编排铁律
+凡命中以下场景之一，严禁使用单步原子工具（read/grep/glob/pwsh）进行多轮循环交互，必须且只能调用 \`${toolName}\` 编写 JavaScript 脚本一次性完成：
+1. 涉及 2 个及以上文件的扫描、检索、批量读取、过滤或统计；
+2. 涉及对外部工具/MCP 的批量查询或需要中间数据聚合、排序、计算；
+3. 任何会返回超过 50 行文本且模型只需部分摘要或指标的探索操作。
+
+【违规判定】：在满足上述场景时逐个调用原子工具属于反模式，会产生巨量 Token 浪费和上下文污染。
 
 【脚本环境规范】
-- 脚本运行于独立轻量 QuickJS-WASM 内存沙箱中，支持 ES2022+ 语法，支持顶层 \`await\` 与 \`return\`。
+- 脚本运行于独立轻量隔离沙箱中，支持 ES2022+ 语法，支持顶层 \`await\` 与 \`return\`。
 - 外部工具映射：全局可用 \`tools.<tool_name>(args)\` 异步函数。
   - 例如：\`const content = await tools.read({ file_path: 'foo.txt' });\`
   - 支持并发：\`const results = await Promise.all(paths.map(p => tools.read({ file_path: p })));\`
