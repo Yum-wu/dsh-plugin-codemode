@@ -38,8 +38,13 @@
 2. **高交互延迟**：每一个细碎的工具调用都必须等待一次网络传输和完整的模型推理往返。
 3. **计算失真**：让模型在长序列 Prompt 中数行数、比大小或做排序，经常出现数数幻觉与逻辑疏漏。
 
-### Code Mode 的核心设计哲学
-> *“确定性逻辑归代码，不确定性思考归大模型。”（Put deterministic things in code, non-deterministic in LLM）*
+### Code Mode 的核心设计哲学与官方背景
+> *“确定性逻辑归代码，不确定性思考归大模型。”（Put deterministic things in code, non-deterministic in LLM — Hacker News 社区共识）*
+
+深度对标 **Pi 1.0 (Earendil)** 官方 Code Mode 架构及 Cloudflare 生产实践：
+- **[Pi.dev 1.0 官方 Codemode 文档](https://pi.dev/docs/latest/codemode)**：确立了基于内存沙箱与延迟暴露的程序化工具编排（Programmatic Tool Calling）标准。
+- **[Cloudflare / CamelAI 生产案例](https://x.com/Vercantez/article/2082138839888589200)**：将 Agent 从沉重的 VM 容器迁移至 Pi Code Mode + Durable Objects，实现成本数量级下降与超低交互延迟。
+- **Hacker News 核心研讨 ([#49019301](https://news.ycombinator.com/item?id=49019301))**：实测在多工具/多文件工作流中，沙箱化代码编排相较于传统 ReAct 对话往返最高可实现 **99.2% 的成本缩减**。
 
 通过 Code Mode，模型只需要编写一段简短的 JavaScript 异步函数。脚本在受控沙箱内并行调用各类宿主和 MCP 工具，直接在内存完成过滤、清洗和排序，**仅将最终提炼的结构化数据返回会话历史**。
 

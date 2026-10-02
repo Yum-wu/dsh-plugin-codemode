@@ -38,7 +38,12 @@ Modern LLM agents suffer from tool explosion and context pollution:
 3. **Calculation Flaws**: Asking LLMs to count lines, sort arrays, or calculate statistics over huge text chunks often yields subtle hallucinations.
 
 ### The Code Mode Paradigm
-> *"Put deterministic things in code, non-deterministic in LLM."*
+> *"Put deterministic things in code, non-deterministic in LLM."* — Hacker News Community Consensus on Code Mode
+
+Inspired by **Pi 1.0 (Earendil)**'s Code Mode architecture and Cloudflare's production agent rewrite:
+- **[Pi.dev 1.0 Official Codemode Docs](https://pi.dev/docs/latest/codemode)**: Established the Programmatic Tool Calling paradigm via memory-isolated sandboxing and deferred tool exposure.
+- **[Cloudflare / CamelAI Case Study](https://x.com/Vercantez/article/2082138839888589200)**: Rewrote agents from heavy VM containers to Pi Code Mode in Durable Objects, reporting an order-of-magnitude reduction in latency and token costs.
+- **Hacker News Discussion ([#49019301](https://news.ycombinator.com/item?id=49019301))**: Highlighted that orchestrating multi-tool workflows via local sandboxed code delivers up to a **99.2% cost reduction** compared to traditional ReAct loops.
 
 With Code Mode, the agent writes a concise JavaScript async function. The script executes inside an isolated sandbox, concurrently calls registered host and MCP tools, filters out unnecessary data in memory, and **only returns the final distilled result** to the conversation context.
 
