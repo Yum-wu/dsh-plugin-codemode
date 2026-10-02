@@ -1,0 +1,39 @@
+{
+  "name": "dsh-plugin-codemode",
+  "version": "0.1.0",
+  "description": "Pi-style Code Mode for DeepSeek Harness: Programmatic Tool Calling via QuickJS-WASM sandbox",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "codemode",
+    "quickjs",
+    "agent",
+    "ptc"
+  ],
+  "author": "Yum-wu",
+  "license": "MIT",
+  "dependencies": {
+    "quickjs-emscripten": "^0.31.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0"
+  }
+}
