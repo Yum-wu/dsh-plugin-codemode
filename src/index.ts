@@ -36,10 +36,17 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
 
   // 1. 注入 Code Mode 编排硬铁律与沙箱 API 规范
   if (injectGuidance && ctx.systemPrompt?.section) {
-    const order =
-      typeof ctx.systemPrompt.getSectionOrder === 'function'
-        ? ctx.systemPrompt.getSectionOrder(`tool:${toolName}`)
-        : 100;
+    let order = 100;
+    try {
+      if (typeof ctx.systemPrompt.getSectionOrder === 'function') {
+        const resolved = ctx.systemPrompt.getSectionOrder(`tool:${toolName}`);
+        if (Number.isFinite(resolved)) {
+          order = resolved;
+        }
+      }
+    } catch {
+      order = 100;
+    }
 
     ctx.systemPrompt.section({
       name: `tool:${toolName}`,
@@ -90,24 +97,20 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
       const callConfig = options?.callConfig || options?.config;
 
       if (sessionId && callConfig) {
-        // 如果会话尚未缓存，或者当前处于自动协商态
         let effort = sessionEffortCache.get(sessionId);
         if (!effort) {
-          // 提取最后一条用户 Prompt 内容
           const msgs = options.messages || options.session?.messages || [];
           const lastUserMsg = [...msgs].reverse().find((m: any) => m.role === 'user');
           const promptText = typeof lastUserMsg?.content === 'string'
             ? lastUserMsg.content
             : JSON.stringify(lastUserMsg?.content || '');
 
-          // 根据任务特征与当前模型可用阶梯自适应推导
           const available = callConfig.availableEfforts || ['low', 'medium', 'high'];
           const decision = decideReasoningEffort(promptText, available);
           effort = decision.matchedEffort;
           sessionEffortCache.set(sessionId, effort);
         }
 
-        // 仅在 callConfig 支持时动态改写思考深度
         if (effort && callConfig.reasoningEffort) {
           options = {
             ...options,
@@ -119,7 +122,7 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         }
       }
     } catch {
-      // 容错降级：不影响主干流式调用
+      // 容错降级
     }
     return next(options);
   });
@@ -173,7 +176,6 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
 
       const formatted = formatExecutionResult(outcome, maxResultChars);
 
-      // 返回兼容 DSH Native 卡片及标准工具文本结果
       return {
         content: [
           {
