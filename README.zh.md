@@ -92,7 +92,11 @@
 - **🚀 双核沙箱支持**：
   - **V8 VM 引擎 (`engine: 'vm'`, 默认)**：与 DSH 官方工作流 PTC 架构对齐，0 额外内存开销，支持任意大文件吞吐与高并发。
   - **QuickJS WASM 引擎 (`engine: 'quickjs'`)**：轻量级 WebAssembly 纯内存沙箱，零 Node/OS 原生暴露。
-- **🔄 全局透明工具代理**：原生映射 DSH 全部内置工具 (`read`, `edit`, `pwsh`, `glob`) 与 MCP 工具 (`mcp__*`)。
+- **🔄 全局透明工具代理与零开销自省**：
+  - 原生映射 DSH 全部内置工具 (`read`, `edit`, `pwsh`, `glob`) 与 MCP 工具 (`mcp__github__*`, `mcp__cua*`, `mcp__tavily__*`)。
+  - **零 Token 提示词底噪探查**：无需在对话上下文塞入上百个工具的臃肿 Schema：
+    - `tools.list()`：秒级获取内存中已挂载的工具名称数组。
+    - `tools.help('namePattern')`：在沙箱内存里按需自省参数定义与说明，节省 90% 以上系统提示词底噪。
 - **🛡 坚固安全防护**：
   - 60 秒硬超时熔断机制，死循环自动销毁沙箱。
   - 递归调用拦截，禁止在脚本内套娃调用 `codemode` 自身。
@@ -117,8 +121,16 @@ const results = await Promise.all(files.slice(0, 10).map(async (file) => {
 return results.sort((a, b) => b.count - a.count).slice(0, 3);
 ```
 
-### 2. 跨工具与多 MCP 串联编排
+### 2. 零 Token 动态自省与按需 MCP 编排
 ```javascript
+// 在沙箱内动态探测工具，无需向模型暴露 140+ 个繁复的 JSON Schema
+const available = tools.list();
+console.log(`当前活跃工具数: ${available.length}`);
+
+// 仅在需要时按需查阅某个工具的入参文档
+const prHelp = tools.help('github__list_pull_requests');
+console.log(prHelp);
+
 // 通过 GitHub MCP 拉取 PR 列表并在内存中提炼
 const prs = await tools.mcp__github__list_pull_requests({
   owner: 'deepseek-ai',

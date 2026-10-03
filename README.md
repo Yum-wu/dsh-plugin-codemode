@@ -92,7 +92,11 @@ With Code Mode, the agent writes a concise JavaScript async function. The script
 - **🚀 Dual-Engine Execution**:
   - **V8 VM Engine (`engine: 'vm'`, Default)**: Aligns with DSH's official PTC workflow architecture. Zero overhead, handles multi-megabyte payloads, native microsecond performance.
   - **QuickJS-WASM Engine (`engine: 'quickjs'`)**: Strict WebAssembly memory isolation, zero Node/OS footprint.
-- **🔄 Universal Tool Proxy**: Access all DSH built-in tools (`read`, `edit`, `pwsh`, `glob`) and MCP tools (`mcp__github__*`, `mcp__tavily__*`) via `tools.<tool_name>(args)`.
+- **🔄 Universal Tool Proxy & Dynamic Introspection**:
+  - Access all DSH built-in tools (`read`, `edit`, `pwsh`, `glob`) and MCP tools (`mcp__github__*`, `mcp__cua*`, `mcp__tavily__*`) via `tools.<tool_name>(args)`.
+  - **Zero-Token Tool Discovery**: Introspect tools dynamically at runtime without polluting system prompts or wasting context tokens:
+    - `tools.list()`: Returns the full array of registered tool names in memory.
+    - `tools.help('namePattern')`: Inspects parameters and JSON Schemas on-demand inside the sandbox, cutting system prompt bloat by over 90%.
 - **🛡 Hard-Safety Protections**:
   - Configurable hard timeout (default 60,000 ms) kills infinite loops automatically.
   - Recursion blocker prevents scripts from invoking `codemode` inside `codemode`.
@@ -117,12 +121,18 @@ const results = await Promise.all(files.slice(0, 10).map(async (file) => {
 return results.sort((a, b) => b.count - a.count).slice(0, 3);
 ```
 
-### 2. Multi-MCP Composition
+### 2. Zero-Token Dynamic Introspection & On-Demand MCP Execution
 ```javascript
-// Fetch latest issues via GitHub MCP and summarize with web search
-const issues = await tools.mcp__github__list_issues({ owner: 'foo', repo: 'bar' });
-console.log(`Fetched ${issues.length} issues`);
+// Discover tools dynamically without polluting the prompt with 140+ tool schemas
+const available = tools.list();
+console.log(`Discovered ${available.length} active tools`);
 
+// Inspect parameters on-demand only when needed
+const issueHelp = tools.help('github__list_issues');
+console.log(issueHelp);
+
+// Fetch latest issues via GitHub MCP and summarize in memory
+const issues = await tools.mcp__github__list_issues({ owner: 'deepseek-ai', repo: 'deepseek-harness' });
 const topIssues = issues.slice(0, 3).map(i => ({
   number: i.number,
   title: i.title,
