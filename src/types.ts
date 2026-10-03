@@ -5,12 +5,14 @@ export interface DshContext extends Context {
     register: (def: any) => void;
     keys?: () => IterableIterator<string>;
     list?: () => Array<{ name: string }>;
-    get?: (name: string) => any;
+    get?: (name: string, scope?: any) => any;
     execute?: (name: string, args: any, sessionCtx?: any) => Promise<any>;
+    view?: (scope?: any) => any;
   };
   systemPrompt?: {
     getSectionOrder?: (name: string) => number;
     section: (options: { name: string; order: number; text: string }) => void;
+    assemble?: (context: any) => Promise<any>;
   };
 }
 
@@ -25,6 +27,10 @@ export interface CodeModeConfig {
   timeoutMs?: number;
   /** 是否向模型系统提示词追加 Code Mode 编排指南，默认 true */
   injectGuidance?: boolean;
+  /** 是否开启 Pi 模式顶层工具收敛过滤（仅暴露核心轻量工具 + codemode，其余收进沙箱） */
+  collapseTopLevelTools?: boolean;
+  /** 当 collapseTopLevelTools 开启时，允许保留在顶层暴露的核心轻量工具白名单 */
+  allowedTopLevelTools?: string[];
 }
 
 export interface CodeModeArgs {

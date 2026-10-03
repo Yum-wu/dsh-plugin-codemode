@@ -6,17 +6,39 @@ import { formatExecutionResult } from './truncator.js';
 export const name = 'dsh-plugin-codemode';
 export const inject = ['tools', 'systemPrompt'];
 
+/**
+ * 默认参考 Pi 架构保留的核心轻量工具白名单：
+ * 保留低延迟单步交互、问答确认、目标追踪与单文件快速读取，其余一律收敛进沙箱
+ */
+export const DEFAULT_CORE_TOOLS = [
+  'codemode',
+  'ask_user_question',
+  'pwsh',
+  'read',
+  'edit',
+  'write',
+  'glob',
+  'grep',
+  'get_goal',
+  'update_goal',
+  'todo_write',
+];
+
 export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
   const toolName = config.toolName || 'codemode';
-  const maxResultChars = config.maxResultChars ?? 50000;
-  const timeoutMs = config.timeoutMs ?? 60000;
+  const maxResultChars = config.maxResultChars || 50000;
+  const timeoutMs = config.timeoutMs || 60000;
   const injectGuidance = config.injectGuidance !== false;
+  const collapseTopLevel = config.collapseTopLevelTools === true;
+  const allowedTools = new Set(config.allowedTopLevelTools || DEFAULT_CORE_TOOLS);
+  allowedTools.add(toolName);
 
-  // 1. 向模型提示词注入强门禁编排硬规则
-  if (injectGuidance && ctx.systemPrompt) {
-    const order = typeof ctx.systemPrompt.getSectionOrder === 'function'
-      ? ctx.systemPrompt.getSectionOrder('TOOL_WORKFLOW') || 25
-      : 25;
+  // 1. 注入 Code Mode 编排硬铁律与沙箱 API 规范
+  if (injectGuidance && ctx.systemPrompt?.section) {
+    const order =
+      typeof ctx.systemPrompt.getSectionOrder === 'function'
+        ? ctx.systemPrompt.getSectionOrder(`tool:${toolName}`)
+        : 100;
 
     ctx.systemPrompt.section({
       name: `tool:${toolName}`,
@@ -34,15 +56,35 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
 - 外部工具映射：全局可用 \`tools.<tool_name>(args)\` 异步函数。
   - 例如：\`const content = await tools.read({ file_path: 'foo.txt' });\`
   - 支持并发：\`const results = await Promise.all(paths.map(p => tools.read({ file_path: p })));\`
+- 零 Token 动态自省：可在脚本中调用 \`tools.list()\` 查看全部可用工具名，调用 \`tools.help('tool_name')\` 在沙箱内存中查阅完整 Schema，严禁索取全量静态定义。
 - 结果返回：使用 \`return <value>\` 返回最终提炼的结构化数据（中间工具输出不会污染主对话上下文）。
 - 调试输出：支持使用 \`console.log(...)\` 或 \`text(...)\` 打印人类可读的关键进度日志。`,
     });
   }
 
-  // 2. 注册面向模型的 codemode 工具
+  // 2. 挂载 DSH 系统提示词组装流水线 (Waterfall)，收敛顶层工具声明
+  if (collapseTopLevel) {
+    (ctx as any).waterfall('system-prompt/assemble', async (assembly: any, context: any, next: () => Promise<any>) => {
+      const original = await next();
+      if (!original || !Array.isArray(original.tools)) return original;
+
+      // 仅保留核心轻量白名单工具，把其余 130+ 个 MCP / GUI 重型工具从顶层 Prompt 中剔除
+      const filteredTools = original.tools.filter((t: any) => {
+        const name = typeof t === 'string' ? t : t?.name || t?.function?.name;
+        return allowedTools.has(name);
+      });
+
+      return {
+        ...original,
+        tools: filteredTools,
+      };
+    });
+  }
+
+  // 3. 注册面向模型的 codemode 工具
   const toolDefinition = {
     name: toolName,
-    description: `在受控内存沙箱中执行模型编写的 JavaScript (ES2022+) 编排脚本。通过 \`tools.<tool_name>(args)\` 异步调用已注册的各类宿主及 MCP 工具，支持 Promise.all 并发与数据过滤。只有显式 return 的提炼结果和日志才会进入上下文，中间原始数据不污染会话历史。`,
+    description: `在受控内存沙箱中执行模型编写的 JavaScript (ES2022+) 编排脚本。通过 \`tools.<tool_name>(args)\` 异步调用已注册的各类宿主及 MCP 工具，支持 Promise.all 并发与数据过滤。只有显式 return 的提炼结果和日志才会进入上下文，中间原始数据不污染会话历史。沙箱支持 tools.list() 与 tools.help(name)。`,
     parameters: {
       type: 'object',
       properties: {
