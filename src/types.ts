@@ -35,6 +35,7 @@ export interface CodeModeArgs {
 export interface ToolExecutionBridge {
   executeTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   listAvailableTools?: () => string[];
+  getToolHelp?: (namePattern?: string) => any[];
 }
 
 export interface ScriptExecutionOptions {

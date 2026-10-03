@@ -50,6 +50,12 @@ export async function executeInVmSandbox(
       {
         get(_, prop) {
           const toolName = String(prop);
+          if (toolName === 'list') {
+            return () => options.bridge.listAvailableTools?.() || [];
+          }
+          if (toolName === 'help') {
+            return (pattern?: string) => (options.bridge as any).getToolHelp?.(pattern) || [];
+          }
           return async (args: Record<string, unknown> = {}) => {
             return await options.bridge.executeTool(toolName, args);
           };

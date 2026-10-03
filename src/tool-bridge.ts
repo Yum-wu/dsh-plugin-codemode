@@ -6,29 +6,64 @@ export interface CreateBridgeOptions {
   currentToolName?: string;
 }
 
+export interface ToolHelpInfo {
+  name: string;
+  description: string;
+  parameters?: any;
+}
+
 /**
  * 创建与 DSH 宿主环境 ctx.tools 对接的桥接器
  */
 export function createDshToolBridge(options: CreateBridgeOptions): ToolExecutionBridge {
   const { ctx, sessionCtx, currentToolName = 'codemode' } = options;
 
+  const getVisibleTools = (): Map<string, any> => {
+    try {
+      if (!ctx.tools) return new Map();
+      if (typeof ctx.tools.view === 'function') {
+        const view = ctx.tools.view(sessionCtx?.agent);
+        if (view && view.visible) return view.visible;
+      }
+      if (ctx.tools instanceof Map) return ctx.tools;
+      return new Map();
+    } catch {
+      return new Map();
+    }
+  };
+
   return {
     listAvailableTools: () => {
       try {
-        if (!ctx.tools) return [];
-        if (typeof ctx.tools.keys === 'function') {
-          return Array.from(ctx.tools.keys()).filter((n) => n !== currentToolName);
+        const visible = getVisibleTools();
+        if (visible.size > 0) {
+          return Array.from(visible.keys()).map(String).filter((n) => n !== currentToolName);
         }
-        if (typeof ctx.tools.list === 'function') {
-          return ctx.tools
-            .list()
-            .map((t: any) => t.name)
-            .filter((n: string) => n !== currentToolName);
+        if (typeof ctx.tools?.keys === 'function') {
+          return Array.from(ctx.tools.keys()).map(String).filter((n) => n !== currentToolName);
         }
         return [];
       } catch {
         return [];
       }
+    },
+
+    getToolHelp: (namePattern?: string): ToolHelpInfo[] => {
+      const visible = getVisibleTools();
+      const results: ToolHelpInfo[] = [];
+      const filter = (namePattern || '').toLowerCase();
+
+      for (const [name, def] of visible.entries()) {
+        if (name === currentToolName) continue;
+        if (!filter || name.toLowerCase().includes(filter) || (def.description && def.description.toLowerCase().includes(filter))) {
+          results.push({
+            name,
+            description: def.description || '',
+            parameters: def.parameters || {},
+          });
+        }
+      }
+      return results;
     },
 
     executeTool: async (name: string, args: Record<string, unknown>) => {
