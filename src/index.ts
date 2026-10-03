@@ -15,6 +15,34 @@ export const inject = ['tools', 'systemPrompt', 'llm', 'connection'];
  */
 export const AUTO_EFFORT_SENTINEL = 'auto';
 
+/** 保留的会话决策条数上限；超出后按插入序淘汰最旧的会话。 */
+export const AUTO_DECISION_CAP = 50;
+
+/** 一次自动档位决策，按会话 id 归档供客户端胶囊读取。 */
+export interface AutoEffortDecision {
+  sessionId: string;
+  effort: string;
+  score: number;
+  reason: string;
+  model: string;
+  ladder: string[];
+  at: string;
+}
+
+/**
+ * 取当前异步驱动链上的 Agent。agent/request 由 agent 作用域派发，
+ * 若宿主把 agent 注入进载荷就用载荷，否则退回 initiator 边界。
+ * 两条路都不可用时返回 undefined —— 调用方按 'default' 归档，不抛错。
+ */
+function currentAgent(ctx: any): any {
+  try {
+    const registry = ctx?.agents ?? ctx?.get?.('agents');
+    return registry?.currentInitiator?.();
+  } catch {
+    return undefined;
+  }
+}
+
 /** 取会话中最后一条用户消息的纯文本，作为复杂度评分的输入。 */
 export function lastUserPromptText(session: any): string {
   const messages: any[] = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
@@ -120,18 +148,27 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
   // 且 cordis 的 next() 不吃实参，改不动。agent/request 的返回值直接喂给 llm.prepareCall。
   // global+prepend：跨 agent 作用域都命中，且排在 dsh-agent 自己的模型选择监听之前成为最外层。
   const autoReasoning = config.autoReasoning === true;
-  const autoStats = { seen: 0, lastIncoming: 'never', lastOutgoing: 'never' };
-  let lastAutoDecision: {
-    effort: string;
-    score: number;
-    reason: string;
-    model: string;
-    ladder: string[];
-    at: string;
-  } | null = null;
+  const autoStats = { seen: 0, lastIncoming: 'never', lastOutgoing: 'never', lastAgentSource: 'never' };
+  // 决策必须按会话隔离：agent/request 是全局瀑布，单槽变量会让所有会话的胶囊
+  // 显示同一条（最近一次）记录。Map 保留插入序，超上限时淘汰最旧的会话。
+  const autoDecisions = new Map<string, AutoEffortDecision>();
+  const rememberDecision = (decision: AutoEffortDecision) => {
+    autoDecisions.delete(decision.sessionId);
+    autoDecisions.set(decision.sessionId, decision);
+    while (autoDecisions.size > AUTO_DECISION_CAP) {
+      const oldest = autoDecisions.keys().next().value;
+      if (oldest === undefined) break;
+      autoDecisions.delete(oldest);
+    }
+  };
 
   (ctx as any).on('agent/request', async (payload: any, next: () => Promise<any>) => {
     const resolved = await next();
+    // 会话归属：优先取 payload 上注入的 agent，退回 cordis 的 initiator 边界。
+    // agent/request 的瀑布载荷由 agent 作用域派发，两种来源在不同宿主版本上各有一路。
+    const agent = payload?.agent ?? currentAgent(ctx);
+    const sessionId = String(agent?.id ?? agent?.session?.id ?? 'default');
+    autoStats.lastAgentSource = payload?.agent ? 'payload' : agent ? 'initiator' : 'none';
     autoStats.seen += 1;
     autoStats.lastIncoming = resolved?.reasoningEffort === void 0 ? '<absent>' : String(resolved.reasoningEffort);
     const passthrough = () => { autoStats.lastOutgoing = autoStats.lastIncoming; return resolved; };
@@ -154,15 +191,16 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         autoStats.lastOutgoing = '<omitted:no-ladder>';
         return withoutSentinel;
       }
-      const decision = decideReasoningEffort(lastUserPromptText(payload?.agent?.session), ladder);
-      lastAutoDecision = {
+      const decision = decideReasoningEffort(lastUserPromptText(agent?.session), ladder);
+      rememberDecision({
+        sessionId,
         effort: decision.matchedEffort,
         score: decision.score,
         reason: decision.reason,
         model: resolved.model,
         ladder,
         at: new Date().toISOString(),
-      };
+      });
       autoStats.lastOutgoing = decision.matchedEffort;
       ctx.logger?.info?.(
         `codemode auto-reasoning: ${resolved.model} -> ${decision.matchedEffort} ` +
@@ -182,11 +220,19 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
     path: '/api/codemode.auto-effort',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: () => Promise.resolve(Response.json({
-      enabled: autoReasoning,
-      ...autoStats,
-      decision: lastAutoDecision,
-    })),
+    fetch: (request: Request) => {
+      const sessionId = new URL(request.url).searchParams.get('sessionId') ?? '';
+      const decision =
+        autoDecisions.get(sessionId) ??
+        (sessionId === '' ? [...autoDecisions.values()].pop() : undefined);
+      return Promise.resolve(Response.json({
+        enabled: autoReasoning,
+        ...autoStats,
+        sessionId,
+        decision: decision ?? null,
+        sessions: [...autoDecisions.keys()],
+      }));
+    },
   });
 
   // 4. 注册面向模型的 codemode 工具

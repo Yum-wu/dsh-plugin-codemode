@@ -236,11 +236,30 @@ npm run build
 | 档位来源 | `ctx.llm.resolveModelInfo(provider, model).reasoning.efforts`，即模型自己的阶梯，不硬编码。 |
 | 评分口径 | 确定性关键词分级 1–10（`auto-reasoning.ts`）：并发/死锁/资金风控=9，推导/重构=7，常规开发=5，日常问答=2。 |
 | 兜底 | 拿不到阶梯或 `resolveModelInfo` 抛错时，**省略** `reasoningEffort` 让模型用自己的默认档；绝不把 `auto` 交回宿主。 |
-| 状态可见 | 只读路由 `GET /api/codemode.auto-effort`（走宿主共享 `/api` 通道，受同源鉴权保护），输入框底栏胶囊每 3s 轮询。 |
+| 状态可见 | 只读路由 `GET /api/codemode.auto-effort?sessionId=<id>`（走宿主共享 `/api` 通道，受同源鉴权保护），输入框底栏胶囊每 3s 轮询。 |
+| 会话隔离 | 决策按 **`sessionId`** 归档（LRU，上限 50，见 `AUTO_DECISION_CAP`）。`agent/request` 是**全局**瀑布，早先用单个模块级变量存"最近一条"，导致所有会话的胶囊显示同一条记录。会话 id 取自 `payload.agent.id`，取不到则退回 `ctx.get('agents').currentInitiator()` —— 真实宿主发射的载荷只有 `{turn, step, signal}`，所以实际生效的是 initiator 那条路（端点用 `lastAgentSource` 回报走了哪条）。 |
 
-> ⚠️ `auto` **不是** DSH 的合法档位键（合法集合只有 `off/minimal/low/medium/high/xhigh/max`）。
-> 单独在模型的 `reasoningEfforts` 里加 `auto: auto` 会让配置校验失败、整个 provider 插件不激活；
-> 必须配合本插件才有意义。
+### 让模型拾取器出现 `Auto`
+
+拾取器的档位菜单**完全按模型声明的 `reasoningEfforts` 生成**，所以必须把 `auto` 列进去，
+菜单里才会有这一项：
+
+```yaml
+- id: google-antigravity/gemini-3.8-flash
+  reasoningEfforts:
+    auto: auto            # <- 拾取器里多出 "auto" 这一项
+    low: low
+    medium: medium
+    high: high
+```
+
+在 `dsh-0.2.0-rc.2` 上实测（2026-10-04）：声明 `auto: auto` 后拾取器确实出现 `Auto`，
+选中后发往 `agent/request` 的 `reasoningEffort` 就是 `'auto'`，插件在请求出站前把它换成合法档位，
+胶囊随之按投影结果变绿/黄/红/紫。
+
+> ⚠️ `auto` **不是** DSH 的档位键（合法递进集合只有 `off/minimal/low/medium/high/xhigh/max`），
+> 它在这里只是一个**拾取器哨兵**，必须由本插件改写掉。绝不能让 `auto` 真的落到
+> `llm.prepareCall` —— 插件的兜底路径是**省略该字段**，而不是把它交回去。
 
 ---
 
@@ -259,12 +278,14 @@ npm run build
 ```bash
 npm test
 ```
-执行全量自动化单元测试：
+执行全量自动化单元测试（21 例）：
 - `Promise.all` 批量多工具并发执行验证。
 - 递归调用自身拦截验证。
 - 原生安全沙箱隔离性检验（绝无 Node 进程/文件等宿主权限泄露）。
 - 输出长文本安全截断与格式化。
 - 死循环超时强制中断。
+- 用真实 cordis 调度器验证 `auto` 哨兵改写（阶梯投影、`prepend` 顺序、两条兜底路径）。
+- 会话级决策隔离、归档上限、以及 `currentInitiator()` 退回路径。
 
 ---
 

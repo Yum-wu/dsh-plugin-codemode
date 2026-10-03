@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
-import { apply, AUTO_EFFORT_SENTINEL, lastUserPromptText } from '../lib/index.js';
+import { apply, AUTO_EFFORT_SENTINEL, AUTO_DECISION_CAP, lastUserPromptText } from '../lib/index.js';
 
 /**
  * agent/request 上 Auto Reasoning Effort 的集成测试。
@@ -11,7 +11,7 @@ import { apply, AUTO_EFFORT_SENTINEL, lastUserPromptText } from '../lib/index.js
 
 const GEMINI_LADDER = ['low', 'medium', 'high'];
 
-function makeCtx({ ladder = GEMINI_LADDER, resolveThrows = false, resolveModelInfo } = {}) {
+function makeCtx({ ladder = GEMINI_LADDER, resolveThrows = false, resolveModelInfo, withFetch = false } = {}) {
   const ctx = new Context();
   ctx.provide('tools', { register() {} });
   ctx.provide('systemPrompt', { section() {}, getSectionOrder() { return 100; } });
@@ -22,7 +22,28 @@ function makeCtx({ ladder = GEMINI_LADDER, resolveThrows = false, resolveModelIn
       return { reasoning: { efforts: ladder.map((id) => ({ id, name: id })) } };
     }),
   });
+  if (withFetch) {
+    const routes = [];
+    ctx.provide('connection', { fetch: { register: (route) => { routes.push(route); return async () => {}; } } });
+    ctx.__routes = routes;
+  }
   return ctx;
+}
+
+/** 触发一次真实宿主调用并读回该会话归档的决策。 */
+async function decideFor(ctx, sessionId, promptText) {
+  await emitAgentRequest(
+    ctx,
+    { turn: 1, step: 0, agent: { id: sessionId, session: makeSession(promptText) } },
+    { provider: 'opencodex', model: 'google-antigravity/gemini-3.8-flash', reasoningEffort: AUTO_EFFORT_SENTINEL },
+  );
+}
+
+async function readRoute(ctx, sessionId) {
+  const route = ctx.__routes[0];
+  const url = 'http://local/api/codemode.auto-effort' + (sessionId === undefined ? '' : `?sessionId=${encodeURIComponent(sessionId)}`);
+  const res = await route.fetch(new Request(url));
+  return await res.json();
 }
 
 function makeSession(promptText) {
@@ -163,4 +184,69 @@ test('lastUserPromptText 取最后一条 user 文本, 跳过非文本块', () =>
   assert.equal(lastUserPromptText(session), '第二问');
   assert.equal(lastUserPromptText(undefined), '');
   assert.equal(lastUserPromptText({ deriveMessages: () => [] }), '');
+});
+
+// ── 会话隔离回归护栏 ──────────────────────────────────────────────────────────
+// 缺陷: 决策曾存进单个模块级变量, 全局 agent/request 瀑布让所有会话的胶囊
+// 显示同一条"最近一次"记录。修法是按 sessionId 归档。
+
+test('回归: 两个会话各自归档, 端点按 sessionId 返回对应决策', async () => {
+  const ctx = makeCtx({ withFetch: true });
+  apply(ctx, { autoReasoning: true });
+
+  await decideFor(ctx, 'sess-A', '处理并发竞态与死锁, 涉及资金风控清算');   // -> 9/10 high
+  await decideFor(ctx, 'sess-B', '帮我看看这行日志什么意思');               // -> 2/10 low
+
+  const a = await readRoute(ctx, 'sess-A');
+  const b = await readRoute(ctx, 'sess-B');
+
+  assert.equal(a.decision.sessionId, 'sess-A');
+  assert.equal(a.decision.effort, 'high');
+  assert.equal(b.decision.sessionId, 'sess-B');
+  assert.equal(b.decision.effort, 'low');
+  assert.notEqual(a.decision.effort, b.decision.effort, '两个会话必须拿到各自的档位, 不能共享同一条记录');
+  assert.deepEqual(a.sessions, ['sess-A', 'sess-B']);
+});
+
+test('回归: 未知 sessionId 返回 null, 不串到别的会话', async () => {
+  const ctx = makeCtx({ withFetch: true });
+  apply(ctx, { autoReasoning: true });
+  await decideFor(ctx, 'sess-A', '处理并发竞态与死锁');
+
+  const unknown = await readRoute(ctx, 'sess-never-seen');
+  assert.equal(unknown.decision, null, '没决策过的会话必须返回 null, 不能回落到最近一条');
+
+  const noParam = await readRoute(ctx, undefined);
+  assert.equal(noParam.decision.sessionId, 'sess-A', '不带 sessionId 时才回落到最近一条(向后兼容)');
+});
+
+test('回归: 会话 id 归档上限有界, 不会无限增长', async () => {
+  const ctx = makeCtx({ withFetch: true });
+  apply(ctx, { autoReasoning: true });
+  for (let i = 0; i < AUTO_DECISION_CAP + 5; i++) await decideFor(ctx, `sess-${i}`, '处理并发竞态');
+
+  const data = await readRoute(ctx, undefined);
+  assert.equal(data.sessions.length, AUTO_DECISION_CAP);
+  assert.equal(data.sessions[0], 'sess-5', '淘汰的是最旧的会话');
+  assert.equal(data.sessions[AUTO_DECISION_CAP - 1], `sess-${AUTO_DECISION_CAP + 4}`);
+});
+
+test('回归: 载荷没有 agent 时退回 cordis initiator 边界取会话', async () => {
+  const ctx = makeCtx({ withFetch: true });
+  apply(ctx, { autoReasoning: true });
+  ctx.provide('agents', {
+    currentInitiator: () => ({ id: 'sess-from-initiator', session: makeSession('处理并发竞态与死锁') }),
+  });
+
+  // 复刻真实宿主: dsh-agent-loop 发射的载荷只有 {turn, step, signal}, 没有 agent
+  await emitAgentRequest(
+    ctx,
+    { turn: 1, step: 0 },
+    { provider: 'opencodex', model: 'google-antigravity/gemini-3.8-flash', reasoningEffort: AUTO_EFFORT_SENTINEL },
+  );
+
+  const data = await readRoute(ctx, 'sess-from-initiator');
+  assert.equal(data.decision.sessionId, 'sess-from-initiator');
+  assert.equal(data.decision.effort, 'high');
+  assert.equal(data.lastAgentSource, 'initiator');
 });

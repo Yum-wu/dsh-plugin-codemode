@@ -9,9 +9,10 @@ test('Bridge - Promise.all parallel tool execution', async () => {
 
   const mockCtx = {
     tools: {
-      execute: async (name, args) => {
-        calls.push(name + ':' + args.id);
-        return { data: `result-of-${name}-${args.id}` };
+      // DSH 0.2.0 ToolRuntime.execute(exec) 单参契约：exec = {callId, name, arguments, signal, agent?}
+      execute: async (exec) => {
+        calls.push(exec.name + ':' + exec.arguments.id);
+        return { data: `result-of-${exec.name}-${exec.arguments.id}` };
       },
     },
   };
@@ -52,7 +53,6 @@ test('Bridge - rejects recursive codemode call', async () => {
       execute: async () => 'ok',
     },
   };
-
   const bridge = createDshToolBridge({
     ctx: mockCtx,
     currentToolName: 'codemode',

@@ -234,11 +234,31 @@ tier, or one already stored in the session header, is always left untouched).
 | Ladder source | `ctx.llm.resolveModelInfo(provider, model).reasoning.efforts` — never hardcoded. |
 | Scoring | Deterministic 1-10 keyword tiers (`auto-reasoning.ts`): concurrency/deadlock/risk = 9, derivation/refactor = 7, routine dev = 5, lookup = 2. |
 | Fallback | No ladder or a failing `resolveModelInfo` -> **omit** `reasoningEffort` so the model default applies. `auto` is never handed back to the host. |
-| Visibility | Read-only route `GET /api/codemode.auto-effort` on the host's shared `/api` channel (same-origin auth applies); the composer-dock pill polls it every 3s. |
+| Visibility | Read-only route `GET /api/codemode.auto-effort?sessionId=<id>` on the host's shared `/api` channel (same-origin auth applies); the composer-dock pill polls it every 3s. |
+| Session isolation | Decisions are archived **per `sessionId`** (LRU, cap 50, `AUTO_DECISION_CAP`). `agent/request` is a *global* waterfall, so a single module-level slot made every conversation's pill show the same "most recent" record. The session id comes from `payload.agent.id`, falling back to `ctx.get('agents').currentInitiator()` — the real host dispatches `agent/request` with `{turn, step, signal}` only, so the initiator boundary is the path that resolves in practice (`lastAgentSource` reports which one fired). |
 
-> ⚠️ `auto` is **not** a valid DSH effort key (the legal set is `off/minimal/low/medium/high/xhigh/max`).
-> Adding `auto: auto` to a model's `reasoningEfforts` on its own fails config validation and stops the
-> whole provider plugin from activating; it only makes sense together with this plugin.
+### Showing `Auto` in the model picker
+
+The picker's effort menu is built verbatim from the model's declared `reasoningEfforts`,
+so `auto` has to be listed there for the entry to exist at all:
+
+```yaml
+- id: google-antigravity/gemini-3.8-flash
+  reasoningEfforts:
+    auto: auto            # <- adds the "auto" entry to the picker
+    low: low
+    medium: medium
+    high: high
+```
+
+Verified on `dsh-0.2.0-rc.2` (2026-10-04): with `auto: auto` declared, the picker offers
+`Auto`, selecting it sends `reasoningEffort: 'auto'` to `agent/request`, and the plugin
+replaces it before the request leaves. The pill turns green/amber/red/purple per projected tier.
+
+> ⚠️ `auto` is **not** a DSH effort key (the legal escalation set is
+> `off/minimal/low/medium/high/xhigh/max`), so it is only meaningful as a *picker sentinel*
+> that this plugin always rewrites. Never leave `auto` as the value actually handed to
+> `llm.prepareCall` — the plugin's fallback path omits the field rather than doing that.
 
 ---
 
@@ -257,12 +277,14 @@ tier, or one already stored in the session header, is always left untouched).
 ```bash
 npm test
 ```
-Runs the test suite verifying:
+Runs the test suite (21 cases) verifying:
 - Parallel `Promise.all` multi-tool execution.
 - Recursive invocation guards.
 - Isolation boundaries (no Node process/require leaks).
 - Output truncation and formatting.
 - Infinite loop timeout aborts.
+- Auto-effort sentinel rewriting against a real cordis dispatcher (ladder projection, `prepend` ordering, fallback paths).
+- Per-session decision isolation, bounded archival, and the `currentInitiator()` fallback.
 
 ---
 
