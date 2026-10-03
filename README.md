@@ -199,13 +199,15 @@ Restart the DSH service from your desktop management console. The agent will imm
 | `maxResultChars` | `number` | `50000` | Maximum length of distilled output returned to context. |
 | `timeoutMs` | `number` | `60000` | Hard deadline per script before auto-termination. |
 | `injectGuidance` | `boolean` | `true` | Injects Code Mode orchestration tips into system prompt. |
+| `autoReasoning` | `boolean` | `false` | Enables Auto Reasoning Effort takeover. **Must be turned on explicitly** — see below. |
 
 ---
 
 ## 🧠 Auto Reasoning Effort
 
-Set `reasoningEffort` to the sentinel **`auto`** in your model config and this plugin projects a
-legal tier onto the model's real effort ladder based on task complexity before the request goes out.
+Set `reasoningEffort` to the sentinel **`auto`** in your model config **and** turn on
+**`autoReasoning: true`** in this plugin's config; the plugin then projects a legal tier based on
+task complexity onto the model's real effort ladder before the request goes out.
 
 ```yaml
 # cordis.patch.yml
@@ -214,8 +216,16 @@ legal tier onto the model's real effort ladder based on task complexity before t
   config:
     provider: opencodex
     model: google-antigravity/gemini-3.8-flash
-    reasoningEffort: auto          # <- sentinel; any other value is a manual pick and is left alone
+    reasoningEffort: auto          # <- sentinel
+- id: plugin-codemode
+  name: 'dsh-plugin-codemode'
+  config:
+    autoReasoning: true            # <- without this the plugin never intervenes
 ```
+
+Both are required: `auto` alone is handed to the host and raises `UNSUPPORTED_REASONING_EFFORT`;
+`autoReasoning` alone does nothing unless the incoming tier really is `auto` (a manually picked
+tier, or one already stored in the session header, is always left untouched).
 
 | Aspect | Detail |
 |---|---|

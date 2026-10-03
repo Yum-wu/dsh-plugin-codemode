@@ -44,6 +44,8 @@ export interface CodeModeConfig {
   collapseTopLevelTools?: boolean;
   /** 当 collapseTopLevelTools 开启时，允许保留在顶层暴露的核心轻量工具白名单 */
   allowedTopLevelTools?: string[];
+  /** 是否接管思考档位 (Auto Reasoning Effort)，默认 false，必须显式开启 */
+  autoReasoning?: boolean;
 }
 
 export interface CodeModeArgs {

@@ -202,13 +202,14 @@ npm run build
 | `maxResultChars` | `number` | `50000` | 返回给模型主上下文的最大字符上限。 |
 | `timeoutMs` | `number` | `60000` | 脚本单次执行的硬超时熔断时限（毫秒）。 |
 | `injectGuidance` | `boolean` | `true` | 是否向模型系统提示词自动注入 Code Mode 编排指南。 |
+| `autoReasoning` | `boolean` | `false` | 是否接管思考档位 (Auto Reasoning Effort)，**必须显式开启**，见下节。 |
 
 ---
 
 ## 🧠 自适应思考档位 (Auto Reasoning Effort)
 
-把模型配置里的 `reasoningEffort` 写成哨兵值 **`auto`**，本插件会按当前任务的复杂度，
-在**该模型真实支持的档位阶梯**内投影出一个合法档位再发请求。
+把模型配置里的 `reasoningEffort` 写成哨兵值 **`auto`**，并在本插件配置里打开 **`autoReasoning: true`**，
+插件会按当前任务的复杂度，在**该模型真实支持的档位阶梯**内投影出一个合法档位再发请求。
 
 ```yaml
 # cordis.patch.yml
@@ -217,8 +218,16 @@ npm run build
   config:
     provider: opencodex
     model: google-antigravity/gemini-3.8-flash
-    reasoningEffort: auto          # ← 哨兵；不写 auto 就是用户手选，插件一律不接管
+    reasoningEffort: auto          # <- 哨兵
+- id: plugin-codemode
+  name: 'dsh-plugin-codemode'
+  config:
+    autoReasoning: true            # <- 不打开就完全不介入
 ```
+
+两个条件缺一不可：只写 `auto` 而不开 `autoReasoning`，`auto` 会原样交给宿主并抛
+`UNSUPPORTED_REASONING_EFFORT`；只开 `autoReasoning` 而档位不是 `auto`（用户手选过、
+或会话 header 里已存着具体值），插件一律放行不碰。
 
 | 要点 | 说明 |
 |---|---|

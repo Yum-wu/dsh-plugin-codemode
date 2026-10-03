@@ -115,12 +115,12 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
     }, { prepend: true });
   }
 
-  // 3. Auto Reasoning Effort：把 `reasoningEffort: auto` 哨兵换成本次任务该用的合法档位。
-  // 必须挂 agent/request 而不是 llm/stream —— 后者拿到的 options 对 loop 请求是 deepFreeze
-  // 的，且 cordis 的 next() 不吃实参，改不动。agent/request 的返回值会直接喂给
-  // llm.prepareCall，是唯一能改档位的口子。
-  // global+prepend：跨 agent 作用域都命中，且排在 dsh-agent 自己的模型选择监听之前成为最外层，
-  // 这样我们的返回值才是 waterfall 的最终结果(cordis 只取最外层返回)。
+  // 3. Auto Reasoning Effort：按任务复杂度决定本次请求的思考档位。
+  // 必须挂 agent/request —— llm/stream 的 options 对 loop 请求是 deepFreeze 的，
+  // 且 cordis 的 next() 不吃实参，改不动。agent/request 的返回值直接喂给 llm.prepareCall。
+  // global+prepend：跨 agent 作用域都命中，且排在 dsh-agent 自己的模型选择监听之前成为最外层。
+  const autoReasoning = config.autoReasoning === true;
+  const autoStats = { seen: 0, lastIncoming: 'never', lastOutgoing: 'never' };
   let lastAutoDecision: {
     effort: string;
     score: number;
@@ -132,7 +132,17 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
 
   (ctx as any).on('agent/request', async (payload: any, next: () => Promise<any>) => {
     const resolved = await next();
-    if (!resolved || resolved.reasoningEffort !== AUTO_EFFORT_SENTINEL) return resolved;
+    autoStats.seen += 1;
+    autoStats.lastIncoming = resolved?.reasoningEffort === void 0 ? '<absent>' : String(resolved.reasoningEffort);
+    const passthrough = () => { autoStats.lastOutgoing = autoStats.lastIncoming; return resolved; };
+    if (!autoReasoning || !resolved) return passthrough();
+
+    // 只接管哨兵 auto：用户在模型拾取器里显式选过、或会话持久 header 里已存着具体档位时，
+    // incoming 就是那个具体值，一律放行不碰。
+    // 2026-10-04 实测 seen=1 / lastIncoming=auto / lastOutgoing=low —— Web 新会话送进来的
+    // 确实是 'auto'。此前胶囊一直停在"待首次请求"，是因为在跑的会话全是我验证时建的那几条、
+    // 其 header 里已存着 high，不是接管条件写错（我一度归因给 agentOptions() 丢掉档位，错了）。
+    if (resolved.reasoningEffort !== AUTO_EFFORT_SENTINEL) return passthrough();
 
     // 兜底路径：拿不到合法档位时【不带】reasoningEffort，让模型用自己的默认档，
     // 绝不能把 'auto' 原样交回宿主(会在 resolveCallWithInfo 抛 UNSUPPORTED_REASONING_EFFORT)
@@ -141,7 +151,7 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
       const info = await ctx.llm?.resolveModelInfo?.(resolved.provider, resolved.model);
       const ladder: string[] = (info?.reasoning?.efforts ?? []).map((effort: any) => String(effort.id));
       if (ladder.length === 0) {
-        ctx.logger?.info?.(`codemode auto-reasoning: ${resolved.model} 无思考档位，省略 reasoningEffort`);
+        autoStats.lastOutgoing = '<omitted:no-ladder>';
         return withoutSentinel;
       }
       const decision = decideReasoningEffort(lastUserPromptText(payload?.agent?.session), ladder);
@@ -153,24 +163,30 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         ladder,
         at: new Date().toISOString(),
       };
+      autoStats.lastOutgoing = decision.matchedEffort;
       ctx.logger?.info?.(
         `codemode auto-reasoning: ${resolved.model} -> ${decision.matchedEffort} ` +
         `(score ${decision.score}/10, ${decision.reason}, ladder=${ladder.join('/')})`
       );
       return { ...resolved, reasoningEffort: decision.matchedEffort };
     } catch (error) {
+      autoStats.lastOutgoing = `<omitted:error>`;
       ctx.logger?.warn?.(`codemode auto-reasoning 决策失败，回退模型默认档位: ${String(error)}`);
       return withoutSentinel;
     }
   }, { global: true, prepend: true });
 
-  // 3b. 把最近一次档位决策暴露给客户端胶囊(lib/client.js 轮询这个只读路由)。
+  // 3b. 把档位决策与诊断计数暴露给客户端胶囊(lib/client.js 轮询这个只读路由)。
   // 走宿主共享 /api 通道，鉴权与信任策略由宿主施加，插件自己不处理凭据。
   ctx.connection?.fetch?.register?.({
     path: '/api/codemode.auto-effort',
     methods: ['GET'],
     requestBody: 'buffered',
-    fetch: () => Promise.resolve(Response.json(lastAutoDecision ?? { idle: true })),
+    fetch: () => Promise.resolve(Response.json({
+      enabled: autoReasoning,
+      ...autoStats,
+      decision: lastAutoDecision,
+    })),
   });
 
   // 4. 注册面向模型的 codemode 工具

@@ -42,7 +42,7 @@ async function emitAgentRequest(ctx, payload, seedConfig) {
 
 test('auto 哨兵被换成本模型合法档位(复杂任务 -> high)', async () => {
   const ctx = makeCtx();
-  apply(ctx, {});
+  apply(ctx, { autoReasoning: true });
   const out = await emitAgentRequest(
     ctx,
     { turn: 1, step: 0, agent: { session: makeSession('处理并发竞态与死锁, 涉及资金风控清算') } },
@@ -54,7 +54,7 @@ test('auto 哨兵被换成本模型合法档位(复杂任务 -> high)', async ()
 
 test('auto 哨兵: 简单任务降到 low', async () => {
   const ctx = makeCtx();
-  apply(ctx, {});
+  apply(ctx, { autoReasoning: true });
   const out = await emitAgentRequest(
     ctx,
     { turn: 1, step: 0, agent: { session: makeSession('帮我看看这行日志什么意思') } },
@@ -65,7 +65,7 @@ test('auto 哨兵: 简单任务降到 low', async () => {
 
 test('用户显式选的档位不被接管', async () => {
   const ctx = makeCtx();
-  apply(ctx, {});
+  apply(ctx, { autoReasoning: true });
   const out = await emitAgentRequest(
     ctx,
     { turn: 1, step: 0, agent: { session: makeSession('处理并发竞态与死锁') } },
@@ -76,7 +76,7 @@ test('用户显式选的档位不被接管', async () => {
 
 test('模型无思考档位时省略 reasoningEffort, 绝不把 auto 交回宿主', async () => {
   const ctx = makeCtx({ ladder: null });
-  apply(ctx, {});
+  apply(ctx, { autoReasoning: true });
   const out = await emitAgentRequest(
     ctx,
     { turn: 1, step: 0, agent: { session: makeSession('随便') } },
@@ -87,7 +87,7 @@ test('模型无思考档位时省略 reasoningEffort, 绝不把 auto 交回宿�
 
 test('resolveModelInfo 抛错时兜底省略档位(不能让请求带着 auto 去死)', async () => {
   const ctx = makeCtx({ resolveThrows: true });
-  apply(ctx, {});
+  apply(ctx, { autoReasoning: true });
   const out = await emitAgentRequest(
     ctx,
     { turn: 1, step: 0, agent: { session: makeSession('随便') } },
@@ -105,7 +105,7 @@ test('prepend 生效: 档位按【最终模型】的阶梯投影, 而不是种�
       reasoning: { efforts: ladders[model].map((id) => ({ id, name: id })) },
     }),
   });
-  apply(ctx, {});
+  apply(ctx, { autoReasoning: true });
   ctx.on('agent/request', async (_payload, next) => {
     const inner = await next();
     return { ...inner, model: 'wide' };
@@ -128,6 +128,28 @@ test('回归护栏: apply() 里禁止调用 ctx.waterfall(那是发射器, 曾�
   ctx.waterfall = original;
   assert.equal(calledDuringApply, 0,
     'apply() 期间出现了 ctx.waterfall(...) —— 注册监听要用 ctx.on, 用 waterfall 会让 dsh 启动即 fatal');
+});
+
+test('开关关闭时一律不接管(默认行为)', async () => {
+  const ctx = makeCtx();
+  apply(ctx, {});                       // 不传 autoReasoning
+  const out = await emitAgentRequest(
+    ctx,
+    { turn: 1, step: 0, agent: { session: makeSession('处理并发竞态与死锁') } },
+    { provider: 'opencodex', model: 'x', reasoningEffort: AUTO_EFFORT_SENTINEL },
+  );
+  assert.equal(out.reasoningEffort, AUTO_EFFORT_SENTINEL, '未开启就该原样放行');
+});
+
+test('档位缺失时不接管(实测 Web 新会话送进来的是 auto 而非 absent)', async () => {
+  const ctx = makeCtx();
+  apply(ctx, { autoReasoning: true });
+  const out = await emitAgentRequest(
+    ctx,
+    { turn: 1, step: 0, agent: { session: makeSession('处理并发竞态与死锁, 资金风控清算') } },
+    { provider: 'opencodex', model: 'google-antigravity/gemini-3.8-flash' },
+  );
+  assert.equal('reasoningEffort' in out, false, '没人选过档位就交回宿主，让模型用自己的默认档');
 });
 
 test('lastUserPromptText 取最后一条 user 文本, 跳过非文本块', () => {
