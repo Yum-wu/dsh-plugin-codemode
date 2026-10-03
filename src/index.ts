@@ -5,7 +5,31 @@ import { formatExecutionResult } from './truncator.js';
 import { decideReasoningEffort } from './auto-reasoning.js';
 
 export const name = 'dsh-plugin-codemode';
-export const inject = ['tools', 'systemPrompt'];
+export const inject = ['tools', 'systemPrompt', 'llm', 'connection'];
+
+/**
+ * 模型配置里写 `reasoningEffort: auto` 时的哨兵值。
+ * cordis 的档位枚举只有 off/minimal/low/medium/high/xhigh/max，`auto` 不是合法档位，
+ * 会在 dsh-llm 的 resolveCallWithInfo 里抛 UNSUPPORTED_REASONING_EFFORT；
+ * 本插件在 agent/request 上把它换成按任务复杂度投影出的合法档位。
+ */
+export const AUTO_EFFORT_SENTINEL = 'auto';
+
+/** 取会话中最后一条用户消息的纯文本，作为复杂度评分的输入。 */
+export function lastUserPromptText(session: any): string {
+  const messages: any[] = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== 'user' || !Array.isArray(message.content)) continue;
+    const text = message.content
+      .filter((block: any) => block?.type === 'text')
+      .map((block: any) => String(block.text ?? ''))
+      .join('\n')
+      .trim();
+    if (text) return text;
+  }
+  return '';
+}
 
 /**
  * 默认参考 Pi 架构保留的核心轻量工具白名单：
@@ -72,7 +96,7 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
 
   // 2. 挂载 DSH 系统提示词组装流水线 (Waterfall)，收敛顶层工具声明
   // ctx.waterfall() 是「发射」，注册监听必须用 ctx.on()；prepend 让本监听成为最外层，
-  // 返回值才会作为 waterfall 的最终结果 (cordis 只取首个监听的返回)
+  // waterfall 的整体结果就是最外层监听器的返回值（实测：内层监听返回的值只向上传给它的外层）
   if (collapseTopLevel) {
     (ctx as any).on('system-prompt/assemble', async (assembly: any, context: any, next: () => Promise<any>) => {
       const original = await next();
@@ -91,34 +115,62 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
     }, { prepend: true });
   }
 
-  // 3. 挂载 llm/stream 拦截流水线：实现模型自适应思考程度 (Auto Reasoning Effort)
-  // 注意: cordis 的 next() 不接受参数，且 loop 请求的 options 已 deepFreeze，
-  // 这里只能观察/记账，改档位需要挂到 agent/request 上 (见 docs 待办)
-  const sessionEffortCache = new Map<string, string>();
-  (ctx as any).on('llm/stream', async (options: any, next: () => any) => {
+  // 3. Auto Reasoning Effort：把 `reasoningEffort: auto` 哨兵换成本次任务该用的合法档位。
+  // 必须挂 agent/request 而不是 llm/stream —— 后者拿到的 options 对 loop 请求是 deepFreeze
+  // 的，且 cordis 的 next() 不吃实参，改不动。agent/request 的返回值会直接喂给
+  // llm.prepareCall，是唯一能改档位的口子。
+  // global+prepend：跨 agent 作用域都命中，且排在 dsh-agent 自己的模型选择监听之前成为最外层，
+  // 这样我们的返回值才是 waterfall 的最终结果(cordis 只取最外层返回)。
+  let lastAutoDecision: {
+    effort: string;
+    score: number;
+    reason: string;
+    model: string;
+    ladder: string[];
+    at: string;
+  } | null = null;
+
+  (ctx as any).on('agent/request', async (payload: any, next: () => Promise<any>) => {
+    const resolved = await next();
+    if (!resolved || resolved.reasoningEffort !== AUTO_EFFORT_SENTINEL) return resolved;
+
+    // 兜底路径：拿不到合法档位时【不带】reasoningEffort，让模型用自己的默认档，
+    // 绝不能把 'auto' 原样交回宿主(会在 resolveCallWithInfo 抛 UNSUPPORTED_REASONING_EFFORT)
+    const { reasoningEffort: _sentinel, ...withoutSentinel } = resolved;
     try {
-      const sessionId = options?.sessionId || options?.session?.id;
-      const callConfig = options?.callConfig || options?.config;
-
-      if (sessionId && callConfig) {
-        let effort = sessionEffortCache.get(sessionId);
-        if (!effort) {
-          const msgs = options.messages || options.session?.messages || [];
-          const lastUserMsg = [...msgs].reverse().find((m: any) => m.role === 'user');
-          const promptText = typeof lastUserMsg?.content === 'string'
-            ? lastUserMsg.content
-            : JSON.stringify(lastUserMsg?.content || '');
-
-          const available = callConfig.availableEfforts || ['low', 'medium', 'high'];
-          const decision = decideReasoningEffort(promptText, available);
-          effort = decision.matchedEffort;
-          sessionEffortCache.set(sessionId, effort);
-        }
+      const info = await ctx.llm?.resolveModelInfo?.(resolved.provider, resolved.model);
+      const ladder: string[] = (info?.reasoning?.efforts ?? []).map((effort: any) => String(effort.id));
+      if (ladder.length === 0) {
+        ctx.logger?.info?.(`codemode auto-reasoning: ${resolved.model} 无思考档位，省略 reasoningEffort`);
+        return withoutSentinel;
       }
-    } catch {
-      // 容错降级
+      const decision = decideReasoningEffort(lastUserPromptText(payload?.agent?.session), ladder);
+      lastAutoDecision = {
+        effort: decision.matchedEffort,
+        score: decision.score,
+        reason: decision.reason,
+        model: resolved.model,
+        ladder,
+        at: new Date().toISOString(),
+      };
+      ctx.logger?.info?.(
+        `codemode auto-reasoning: ${resolved.model} -> ${decision.matchedEffort} ` +
+        `(score ${decision.score}/10, ${decision.reason}, ladder=${ladder.join('/')})`
+      );
+      return { ...resolved, reasoningEffort: decision.matchedEffort };
+    } catch (error) {
+      ctx.logger?.warn?.(`codemode auto-reasoning 决策失败，回退模型默认档位: ${String(error)}`);
+      return withoutSentinel;
     }
-    return next();
+  }, { global: true, prepend: true });
+
+  // 3b. 把最近一次档位决策暴露给客户端胶囊(lib/client.js 轮询这个只读路由)。
+  // 走宿主共享 /api 通道，鉴权与信任策略由宿主施加，插件自己不处理凭据。
+  ctx.connection?.fetch?.register?.({
+    path: '/api/codemode.auto-effort',
+    methods: ['GET'],
+    requestBody: 'buffered',
+    fetch: () => Promise.resolve(Response.json(lastAutoDecision ?? { idle: true })),
   });
 
   // 4. 注册面向模型的 codemode 工具

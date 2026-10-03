@@ -205,6 +205,36 @@ npm run build
 
 ---
 
+## 🧠 自适应思考档位 (Auto Reasoning Effort)
+
+把模型配置里的 `reasoningEffort` 写成哨兵值 **`auto`**，本插件会按当前任务的复杂度，
+在**该模型真实支持的档位阶梯**内投影出一个合法档位再发请求。
+
+```yaml
+# cordis.patch.yml
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: opencodex
+    model: google-antigravity/gemini-3.8-flash
+    reasoningEffort: auto          # ← 哨兵；不写 auto 就是用户手选，插件一律不接管
+```
+
+| 要点 | 说明 |
+|---|---|
+| 生效位置 | 挂在 cordis 的 `agent/request` waterfall 上（`{global, prepend}`），返回值直接喂给 `llm.prepareCall`。 |
+| 为什么不能挂 `llm/stream` | 那条流水线的 `options` 对 agent-loop 请求是 `deepFreeze` 的，且 cordis 的 `next(x)` 忽略实参，改不动。 |
+| 档位来源 | `ctx.llm.resolveModelInfo(provider, model).reasoning.efforts`，即模型自己的阶梯，不硬编码。 |
+| 评分口径 | 确定性关键词分级 1–10（`auto-reasoning.ts`）：并发/死锁/资金风控=9，推导/重构=7，常规开发=5，日常问答=2。 |
+| 兜底 | 拿不到阶梯或 `resolveModelInfo` 抛错时，**省略** `reasoningEffort` 让模型用自己的默认档；绝不把 `auto` 交回宿主。 |
+| 状态可见 | 只读路由 `GET /api/codemode.auto-effort`（走宿主共享 `/api` 通道，受同源鉴权保护），输入框底栏胶囊每 3s 轮询。 |
+
+> ⚠️ `auto` **不是** DSH 的合法档位键（合法集合只有 `off/minimal/low/medium/high/xhigh/max`）。
+> 单独在模型的 `reasoningEfforts` 里加 `auto: auto` 会让配置校验失败、整个 provider 插件不激活；
+> 必须配合本插件才有意义。
+
+---
+
 ## 🛟 三级零风险回滚策略
 
 | 回滚级别 | 触发场景 | 操作步骤 | 恢复耗时 | 影响面 |

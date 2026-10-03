@@ -202,6 +202,36 @@ Restart the DSH service from your desktop management console. The agent will imm
 
 ---
 
+## 🧠 Auto Reasoning Effort
+
+Set `reasoningEffort` to the sentinel **`auto`** in your model config and this plugin projects a
+legal tier onto the model's real effort ladder based on task complexity before the request goes out.
+
+```yaml
+# cordis.patch.yml
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: opencodex
+    model: google-antigravity/gemini-3.8-flash
+    reasoningEffort: auto          # <- sentinel; any other value is a manual pick and is left alone
+```
+
+| Aspect | Detail |
+|---|---|
+| Hook | cordis `agent/request` waterfall, registered `{global, prepend}`; the return value goes straight into `llm.prepareCall`. |
+| Why not `llm/stream` | Its `options` is `deepFreeze`d for agent-loop requests, and cordis `next(x)` ignores arguments — the tier cannot be changed there. |
+| Ladder source | `ctx.llm.resolveModelInfo(provider, model).reasoning.efforts` — never hardcoded. |
+| Scoring | Deterministic 1-10 keyword tiers (`auto-reasoning.ts`): concurrency/deadlock/risk = 9, derivation/refactor = 7, routine dev = 5, lookup = 2. |
+| Fallback | No ladder or a failing `resolveModelInfo` -> **omit** `reasoningEffort` so the model default applies. `auto` is never handed back to the host. |
+| Visibility | Read-only route `GET /api/codemode.auto-effort` on the host's shared `/api` channel (same-origin auth applies); the composer-dock pill polls it every 3s. |
+
+> ⚠️ `auto` is **not** a valid DSH effort key (the legal set is `off/minimal/low/medium/high/xhigh/max`).
+> Adding `auto: auto` to a model's `reasoningEfforts` on its own fails config validation and stops the
+> whole provider plugin from activating; it only makes sense together with this plugin.
+
+---
+
 ## 🛟 3-Level Zero-Risk Rollback Strategy
 
 | Level | Scenario | Action | Recovery Time | Impact |

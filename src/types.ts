@@ -14,6 +14,19 @@ export interface DshContext extends Context {
     section: (options: { name: string; order: number; text: string }) => void;
     assemble?: (context: any) => Promise<any>;
   };
+  llm?: {
+    resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<any>;
+  };
+  connection?: {
+    fetch?: {
+      register?: (route: {
+        path: string;
+        methods: readonly string[];
+        requestBody: 'buffered' | 'streaming';
+        fetch: (request: Request) => Promise<Response>;
+      }) => () => Promise<void>;
+    };
+  };
 }
 
 export interface CodeModeConfig {
