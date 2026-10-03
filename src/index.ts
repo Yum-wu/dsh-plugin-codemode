@@ -71,8 +71,10 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
   }
 
   // 2. 挂载 DSH 系统提示词组装流水线 (Waterfall)，收敛顶层工具声明
+  // ctx.waterfall() 是「发射」，注册监听必须用 ctx.on()；prepend 让本监听成为最外层，
+  // 返回值才会作为 waterfall 的最终结果 (cordis 只取首个监听的返回)
   if (collapseTopLevel) {
-    (ctx as any).waterfall('system-prompt/assemble', async (assembly: any, context: any, next: () => Promise<any>) => {
+    (ctx as any).on('system-prompt/assemble', async (assembly: any, context: any, next: () => Promise<any>) => {
       const original = await next();
       if (!original || !Array.isArray(original.tools)) return original;
 
@@ -86,12 +88,14 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         ...original,
         tools: filteredTools,
       };
-    });
+    }, { prepend: true });
   }
 
   // 3. 挂载 llm/stream 拦截流水线：实现模型自适应思考程度 (Auto Reasoning Effort)
+  // 注意: cordis 的 next() 不接受参数，且 loop 请求的 options 已 deepFreeze，
+  // 这里只能观察/记账，改档位需要挂到 agent/request 上 (见 docs 待办)
   const sessionEffortCache = new Map<string, string>();
-  (ctx as any).waterfall('llm/stream', async (options: any, next: (opt?: any) => any) => {
+  (ctx as any).on('llm/stream', async (options: any, next: () => any) => {
     try {
       const sessionId = options?.sessionId || options?.session?.id;
       const callConfig = options?.callConfig || options?.config;
@@ -110,21 +114,11 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
           effort = decision.matchedEffort;
           sessionEffortCache.set(sessionId, effort);
         }
-
-        if (effort && callConfig.reasoningEffort) {
-          options = {
-            ...options,
-            callConfig: {
-              ...callConfig,
-              reasoningEffort: effort,
-            },
-          };
-        }
       }
     } catch {
       // 容错降级
     }
-    return next(options);
+    return next();
   });
 
   // 4. 注册面向模型的 codemode 工具
