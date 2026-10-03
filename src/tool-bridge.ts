@@ -41,13 +41,10 @@ export function createDshToolBridge(options: CreateBridgeOptions): ToolExecution
         throw new Error('DSH host ctx.tools is not available.');
       }
 
-      // 2. 尝试标准 DSH ctx.tools.execute(name, args, sessionCtx)
-      if (typeof ctx.tools.execute === 'function') {
-        const res = await ctx.tools.execute(name, args, sessionCtx);
-        return unwrapToolResult(res);
-      }
+      // 2. 深度脱敏：消灭跨 VM / 沙箱的原型链污染，确保纯 JSON 对象
+      const cleanArgs = JSON.parse(JSON.stringify(args || {}));
 
-      // 3. 尝试查找已注册工具对象并调用其 execute 方法
+      // 3. 优先路径：获取已注册工具实例直接执行 (绕过调度器，最低开销)
       let toolInstance: any;
       if (typeof ctx.tools.get === 'function') {
         toolInstance = ctx.tools.get(name);
@@ -56,7 +53,20 @@ export function createDshToolBridge(options: CreateBridgeOptions): ToolExecution
       }
 
       if (toolInstance && typeof toolInstance.execute === 'function') {
-        const res = await toolInstance.execute(args, sessionCtx);
+        const res = await toolInstance.execute(cleanArgs, sessionCtx);
+        return unwrapToolResult(res);
+      }
+
+      // 4. 次选路径：调用标准 DSH 调度器 ctx.tools.execute(exec)
+      if (typeof ctx.tools.execute === 'function') {
+        const randomId = Math.random().toString(36).slice(2, 8);
+        const execObj = {
+          callId: `cm_${Date.now()}_${randomId}`,
+          name,
+          arguments: cleanArgs,
+          ...(sessionCtx ? { agent: sessionCtx.agent } : {}),
+        };
+        const res = await ctx.tools.execute(execObj);
         return unwrapToolResult(res);
       }
 
@@ -82,6 +92,11 @@ function unwrapToolResult(result: unknown): unknown {
   }
   // 如果是 ContentBlock 数组形结构
   if (Array.isArray(obj.content)) {
+    // 优先提取 text 类型 block
+    const textBlock = obj.content.find((b: any) => b && b.type === 'text' && typeof b.text === 'string');
+    if (textBlock) {
+      return textBlock.text;
+    }
     return obj.content;
   }
 
