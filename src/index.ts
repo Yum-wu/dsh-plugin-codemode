@@ -2,6 +2,7 @@ import type { DshContext, CodeModeConfig, CodeModeArgs } from './types.js';
 import { createDshToolBridge } from './tool-bridge.js';
 import { executeCodeModeScript } from './sandbox.js';
 import { formatExecutionResult } from './truncator.js';
+import { decideReasoningEffort } from './auto-reasoning.js';
 
 export const name = 'dsh-plugin-codemode';
 export const inject = ['tools', 'systemPrompt'];
@@ -81,7 +82,49 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
     });
   }
 
-  // 3. 注册面向模型的 codemode 工具
+  // 3. 挂载 llm/stream 拦截流水线：实现模型自适应思考程度 (Auto Reasoning Effort)
+  const sessionEffortCache = new Map<string, string>();
+  (ctx as any).waterfall('llm/stream', async (options: any, next: (opt?: any) => any) => {
+    try {
+      const sessionId = options?.sessionId || options?.session?.id;
+      const callConfig = options?.callConfig || options?.config;
+
+      if (sessionId && callConfig) {
+        // 如果会话尚未缓存，或者当前处于自动协商态
+        let effort = sessionEffortCache.get(sessionId);
+        if (!effort) {
+          // 提取最后一条用户 Prompt 内容
+          const msgs = options.messages || options.session?.messages || [];
+          const lastUserMsg = [...msgs].reverse().find((m: any) => m.role === 'user');
+          const promptText = typeof lastUserMsg?.content === 'string'
+            ? lastUserMsg.content
+            : JSON.stringify(lastUserMsg?.content || '');
+
+          // 根据任务特征与当前模型可用阶梯自适应推导
+          const available = callConfig.availableEfforts || ['low', 'medium', 'high'];
+          const decision = decideReasoningEffort(promptText, available);
+          effort = decision.matchedEffort;
+          sessionEffortCache.set(sessionId, effort);
+        }
+
+        // 仅在 callConfig 支持时动态改写思考深度
+        if (effort && callConfig.reasoningEffort) {
+          options = {
+            ...options,
+            callConfig: {
+              ...callConfig,
+              reasoningEffort: effort,
+            },
+          };
+        }
+      }
+    } catch {
+      // 容错降级：不影响主干流式调用
+    }
+    return next(options);
+  });
+
+  // 4. 注册面向模型的 codemode 工具
   const toolDefinition = {
     name: toolName,
     description: `在受控内存沙箱中执行模型编写的 JavaScript (ES2022+) 编排脚本。通过 \`tools.<tool_name>(args)\` 异步调用已注册的各类宿主及 MCP 工具，支持 Promise.all 并发与数据过滤。只有显式 return 的提炼结果和日志才会进入上下文，中间原始数据不污染会话历史。沙箱支持 tools.list() 与 tools.help(name)。`,
@@ -152,3 +195,4 @@ export * from './types.js';
 export * from './sandbox.js';
 export * from './tool-bridge.js';
 export * from './truncator.js';
+export * from './auto-reasoning.js';
