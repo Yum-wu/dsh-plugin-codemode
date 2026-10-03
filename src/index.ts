@@ -54,6 +54,23 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
       },
       required: ['script'],
     },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+      },
+      render: (_args: any, value: any) => {
+        if (Array.isArray(value?.content)) {
+          return value.content;
+        }
+        return [
+          {
+            type: 'text',
+            text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
+          },
+        ];
+      },
+    },
     execute: async (args: CodeModeArgs, sessionCtx: any) => {
       const bridge = createDshToolBridge({
         ctx,
