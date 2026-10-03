@@ -44,29 +44,39 @@ export function createDshToolBridge(options: CreateBridgeOptions): ToolExecution
       // 2. 深度脱敏：消灭跨 VM / 沙箱的原型链污染，确保纯 JSON 对象
       const cleanArgs = JSON.parse(JSON.stringify(args || {}));
 
-      // 3. 优先路径：获取已注册工具实例直接执行 (绕过调度器，最低开销)
+      // 3. 构建规范的 exec 上下文 (保障 signal 与 agent 存在)
+      const signal = sessionCtx?.signal || new AbortController().signal;
+      const agent = sessionCtx?.agent;
+      const callId = `cm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      // 4. 优先路径：获取已注册工具实例直接执行
       let toolInstance: any;
       if (typeof ctx.tools.get === 'function') {
-        toolInstance = ctx.tools.get(name);
+        toolInstance = ctx.tools.get(name, agent);
       } else if (ctx.tools instanceof Map) {
         toolInstance = ctx.tools.get(name);
       }
 
+      const execContext = {
+        callId,
+        name,
+        arguments: cleanArgs,
+        signal,
+        ...(agent ? { agent } : {}),
+      };
+
       if (toolInstance && typeof toolInstance.execute === 'function') {
-        const res = await toolInstance.execute(cleanArgs, sessionCtx);
-        return unwrapToolResult(res);
+        try {
+          const res = await toolInstance.execute(cleanArgs, execContext);
+          return unwrapToolResult(res);
+        } catch {
+          // 如果直调参数报错，继续降级尝试标准调度
+        }
       }
 
-      // 4. 次选路径：调用标准 DSH 调度器 ctx.tools.execute(exec)
+      // 5. 次选路径：调用标准 DSH 调度器 ctx.tools.execute(exec)
       if (typeof ctx.tools.execute === 'function') {
-        const randomId = Math.random().toString(36).slice(2, 8);
-        const execObj = {
-          callId: `cm_${Date.now()}_${randomId}`,
-          name,
-          arguments: cleanArgs,
-          ...(sessionCtx ? { agent: sessionCtx.agent } : {}),
-        };
-        const res = await ctx.tools.execute(execObj);
+        const res = await ctx.tools.execute(execContext);
         return unwrapToolResult(res);
       }
 
