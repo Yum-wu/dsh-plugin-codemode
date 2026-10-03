@@ -11,7 +11,6 @@ export interface ReasoningEffortDecision {
   tier: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   reason: string;
   matchedEffort: string;
-  auditLabel: string;
 }
 
 export interface ModelEffortLadder {
@@ -117,6 +116,5 @@ export function decideReasoningEffort(
     tier,
     reason,
     matchedEffort: target,
-    auditLabel: `Auto (${target})`,
   };
 }
