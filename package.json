@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-codemode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi-style Code Mode for DeepSeek Harness: Programmatic Tool Calling via QuickJS-WASM sandbox",
   "type": "module",
   "main": "lib/index.js",
@@ -14,6 +14,9 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation"

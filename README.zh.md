@@ -149,7 +149,16 @@ return prs.map(pr => ({
 
 ## 🚀 安装与启用
 
-### 方式 A：通过 npm 安装（推荐）
+### 方式 A：`dsh plugin add`（推荐）
+
+```bash
+dsh plugin add dsh-plugin-codemode
+```
+
+包内声明了 `dsh.bundle.patch`（`cordis.patch.yml`），安装器会**自动**把宿主行插进你的 profile，
+无需手工编辑。重启 DSH 后 `codemode` 工具即出现。
+
+### 方式 B：通过 npm 手动安装
 
 进入你的 DSH profile 目录（如 `~/.dsh/profiles/web`）：
 ```bash
@@ -157,7 +166,20 @@ pnpm add dsh-plugin-codemode
 # 或: npm install dsh-plugin-codemode
 ```
 
-### 方式 B：源码本地开发安装
+然后自行把挂载项加到 `~/.dsh/profiles/web/cordis.patch.yml`：
+```yaml
+- insert:
+    - id: plugin-codemode
+      name: 'dsh-plugin-codemode'
+      config:                  # 全部可选；省略即用默认值
+        toolName: 'codemode'
+        engine: 'vm'           # 'vm' (默认) 或 'quickjs'
+        maxResultChars: 50000
+        timeoutMs: 60000
+        injectGuidance: true
+```
+
+### 方式 C：源码本地开发安装
 ```bash
 git clone https://github.com/Yum-wu/dsh-plugin-codemode.git
 cd dsh-plugin-codemode
@@ -173,22 +195,9 @@ npm run build
   }
 }
 ```
+再按「方式 B」添加挂载项。
 
-### 挂载到配置 (`cordis.patch.yml`)
-编辑 `~/.dsh/profiles/web/cordis.patch.yml` 添加挂载项：
-```yaml
-- insert:
-    - id: plugin-codemode
-      name: 'dsh-plugin-codemode'
-      config:
-        toolName: 'codemode'
-        engine: 'vm'             # 可选: 'vm' (默认) 或 'quickjs'
-        maxResultChars: 50000
-        timeoutMs: 60000
-        injectGuidance: true
-```
-
-### 3. 重启 DSH
+### 重启 DSH
 在桌面通过「服务管理台」点击重启服务即可。大模型将自动获得 `codemode` 工具及对应使用指引。
 
 ---

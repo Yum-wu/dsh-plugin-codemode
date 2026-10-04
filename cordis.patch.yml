@@ -1,0 +1,16 @@
+# Bundle patch layer for dsh-plugin-codemode.
+#
+# 这一行的作用(与 dsh-context / dsh-jev-preset 的 bundle 同构):
+#   - 本行把包的 main 入口(lib/index.js)作为**宿主半边**挂进 profile 的 Loader 树;
+#   - package.json 里的 `dsh.client` 声明则让 Web 端把 ./client 作为**浏览器半边**加载。
+# 两者缺一不可:只有 `dsh.client` 时,`dsh plugin add` 装得下包却接不上宿主行
+# (dsh-plugin-manager/lib/index.js:1134 判 bundle / :1786 非 bundle 直接 not-bundle),
+# 表现就是浏览器侧胶囊在、`codemode` 工具不出现。
+#
+# 这里**故意不写 config**:插件默认值已等于推荐值
+#   toolName='codemode' / engine='vm' / maxResultChars=50000 /
+#   timeoutMs=60000 / injectGuidance=true
+# 需要定制时,在你 profile 的 cordis.patch.yml 里给这一行补 config 覆盖即可。
+- insert:
+    - id: plugin-codemode
+      name: dsh-plugin-codemode

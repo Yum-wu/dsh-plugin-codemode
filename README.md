@@ -146,7 +146,17 @@ return topIssues;
 
 ## 🚀 Installation & Setup
 
-### Option A: Install from npm (Recommended)
+### Option A: `dsh plugin add` (Recommended)
+
+```bash
+dsh plugin add dsh-plugin-codemode
+```
+
+The package declares `dsh.bundle.patch` (`cordis.patch.yml`), so the host row is inserted
+into your profile automatically — nothing to hand-edit. Restart DSH and the `codemode`
+tool appears.
+
+### Option B: Install from npm manually
 
 In your DSH profile directory (e.g. `~/.dsh/profiles/web`):
 ```bash
@@ -154,7 +164,20 @@ pnpm add dsh-plugin-codemode
 # or: npm install dsh-plugin-codemode
 ```
 
-### Option B: Install from Source (Development)
+Then add the row yourself to `~/.dsh/profiles/web/cordis.patch.yml`:
+```yaml
+- insert:
+    - id: plugin-codemode
+      name: 'dsh-plugin-codemode'
+      config:                  # 全部可选;省略即用默认值
+        toolName: 'codemode'
+        engine: 'vm'           # 'vm' (default) or 'quickjs'
+        maxResultChars: 50000
+        timeoutMs: 60000
+        injectGuidance: true
+```
+
+### Option C: Install from Source (Development)
 ```bash
 git clone https://github.com/Yum-wu/dsh-plugin-codemode.git
 cd dsh-plugin-codemode
@@ -170,22 +193,9 @@ Link into your DSH web profile (`~/.dsh/profiles/web/package.json`):
   }
 }
 ```
+Then add the row from Option B.
 
-### Enable in Profile Patch (`cordis.patch.yml`)
-Add to `~/.dsh/profiles/web/cordis.patch.yml`:
-```yaml
-- insert:
-    - id: plugin-codemode
-      name: 'dsh-plugin-codemode'
-      config:
-        toolName: 'codemode'
-        engine: 'vm'             # 'vm' (default) or 'quickjs'
-        maxResultChars: 50000
-        timeoutMs: 60000
-        injectGuidance: true
-```
-
-### 3. Restart DSH
+### Restart DSH
 Restart the DSH service from your desktop management console. The agent will immediately receive the `codemode` tool declaration and execution guidance.
 
 ---
