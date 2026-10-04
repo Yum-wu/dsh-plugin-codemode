@@ -336,12 +336,23 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
     const passthrough = () => { autoStats.lastOutgoing = autoStats.lastIncoming; return resolved; };
     if (!autoReasoning || !resolved) return passthrough();
 
-    // 只接管哨兵 auto：用户在模型拾取器里显式选过、或会话持久 header 里已存着具体档位时，
-    // incoming 就是那个具体值，一律放行不碰。
-    // 2026-10-04 实测 seen=1 / lastIncoming=auto / lastOutgoing=low —— Web 新会话送进来的
-    // 确实是 'auto'。此前胶囊一直停在"待首次请求"，是因为在跑的会话全是我验证时建的那几条、
-    // 其 header 里已存着 high，不是接管条件写错（我一度归因给 agentOptions() 丢掉档位，错了）。
-    if (resolved.reasoningEffort !== AUTO_EFFORT_SENTINEL) return passthrough();
+    // 接管判据（2026-10-04 放宽，需求：**每次发言都重新评估**）：
+    //   a) incoming === 哨兵 'auto'          —— 会话首次请求（seed 来自 AgentOptions）
+    //   b) incoming === 本会话上次我写进去的档位 —— 那是我的回音，不是用户手选
+    // 命中任一即接管重评；用户手选的档位两条都不命中，放行不碰。
+    //
+    // 时序依据（dsh-agent-loop/lib/index.js:1174）：
+    //   requestHeaderLogged ? requestProposal(persistedHeader) : {...route, reasoningEffort?}
+    // 首次请求 seed 来自 AgentOptions(=auto)，之后 seed 来自持久 header(=我上次写的值)，
+    // 所以 b) 正是"上一轮我定的档位"，据此可以安全地每轮重评。
+    //
+    // 误判兜底：若用户手选的档位恰好等于我上次写的值，b) 会误认为回音而重评 ——
+    // 后果仅是胶囊数字短暂偏离；真正发给模型的档位由 dsh-agent 的后置监听
+    // （dsh-agent/lib/index.js:181-192）用拾取器选择重新覆盖，用户手选始终优先。
+    const previousMine = autoDecisions.get(sessionId)?.effort;
+    const isSentinel = resolved.reasoningEffort === AUTO_EFFORT_SENTINEL;
+    const isMyEcho = previousMine !== undefined && resolved.reasoningEffort === previousMine;
+    if (!isSentinel && !isMyEcho) return passthrough();
 
     // 兜底路径：拿不到合法档位时【不带】reasoningEffort，让模型用自己的默认档，
     // 绝不能把 'auto' 原样交回宿主(会在 resolveCallWithInfo 抛 UNSUPPORTED_REASONING_EFFORT)

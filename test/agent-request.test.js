@@ -373,6 +373,58 @@ test('agent/inbox/spliced: 只认 next-turn, 且跳过注入 kind', async () => 
   assert.equal(data.decision.effort, 'low', '只应缓存最后那条真实简单输入');
 });
 
+// ── 每轮重评 ──────────────────────────────────────────────────────────────────
+// dsh-agent-loop:1174 首次请求 seed 来自 AgentOptions(auto), 之后来自持久 header(我上次写的值)。
+// 所以"上一轮我定的档位"会以 incoming 的身份回来 —— 认出这个回音就能每轮重评。
+
+test('每轮重评: 同会话第二轮 incoming 是我上次写的档位 -> 重新评估换档', async () => {
+  const ctx = makeCtx({ withFetch: true });
+  apply(ctx, { autoReasoning: true });
+  const session = { id: 'session-reeval', deriveMessages: () => [] };
+  const seed = (effort) => ({ provider: 'opencodex', model: 'google-antigravity/gemini-3.8-flash', reasoningEffort: effort });
+
+  // 第一轮: 简单
+  ctx.emit('session/event', session, {
+    type: 'agent/inbox/spliced',
+    data: { target: 'next-turn', start: 0, removedCount: 0, inserted: [
+      { id: 'a', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '你好,这行日志什么意思' }] },
+    ] },
+  });
+  const first = await emitAgentRequest(ctx, { turn: 1, step: 0, agent: { id: 'session-reeval', session } }, seed(AUTO_EFFORT_SENTINEL));
+  assert.equal(first.reasoningEffort, 'low');
+
+  // 第二轮: 换成复杂提示词; incoming 是上一轮写进去的 low
+  ctx.emit('session/event', session, {
+    type: 'agent/inbox/spliced',
+    data: { target: 'next-turn', start: 0, removedCount: 0, inserted: [
+      { id: 'b', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '处理并发竞态与死锁, 涉及资金风控清算' }] },
+    ] },
+  });
+  const second = await emitAgentRequest(ctx, { turn: 2, step: 0, agent: { id: 'session-reeval', session } }, seed('low'));
+  assert.equal(second.reasoningEffort, 'high', '第二轮应重评为 high');
+  const data = await readRoute(ctx, 'session-reeval');
+  assert.equal(data.decision.effort, 'high', '归档也应更新为 high');
+});
+
+test('用户手选档位不被接管(不等于本插件上次写的值)', async () => {
+  const ctx = makeCtx({ withFetch: true });
+  apply(ctx, { autoReasoning: true });
+  const session = { id: 'session-userpick', deriveMessages: () => [] };
+  const seed = (effort) => ({ provider: 'opencodex', model: 'google-antigravity/gemini-3.8-flash', reasoningEffort: effort });
+  ctx.emit('session/event', session, {
+    type: 'agent/inbox/spliced',
+    data: { target: 'next-turn', start: 0, removedCount: 0, inserted: [
+      { id: 'a', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '处理并发竞态与死锁, 涉及资金风控清算' }] },
+    ] },
+  });
+  const first = await emitAgentRequest(ctx, { turn: 1, step: 0, agent: { id: 'session-userpick', session } }, seed(AUTO_EFFORT_SENTINEL));
+  assert.equal(first.reasoningEffort, 'high');
+
+  // 用户手选 max: 既不是哨兵, 也不等于我上次写的 high -> 必须原样放行
+  const second = await emitAgentRequest(ctx, { turn: 2, step: 0, agent: { id: 'session-userpick', session } }, seed('max'));
+  assert.equal(second.reasoningEffort, 'max', '用户手选必须原样保留');
+});
+
 test('回归: 缓存按会话隔离, 不跨会话串提示词', async () => {
   const ctx = makeCtx({ withFetch: true });
   apply(ctx, { autoReasoning: true });
