@@ -27,7 +27,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:jev": "node --test test/jev-integration.test.js"
   },
   "keywords": [
     "dsh",

@@ -2,7 +2,7 @@ import type { DshContext, CodeModeConfig, CodeModeArgs } from './types.js';
 import { createDshToolBridge } from './tool-bridge.js';
 import { executeCodeModeScript } from './sandbox.js';
 import { formatExecutionResult } from './truncator.js';
-import { decideReasoningEffort } from './auto-reasoning.js';
+import { decideReasoningEffort, decideReasoningEffortAsync } from './auto-reasoning.js';
 
 export const name = 'dsh-plugin-codemode';
 export const inject = ['tools', 'systemPrompt', 'llm', 'connection'];
@@ -387,7 +387,7 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
       autoStats.lastPromptText = promptText.slice(0, 80);
       autoStats.lastPromptSource = hit === void 0 ? '<none>' : hit[0];
       autoStats.lastCacheSize = lastHumanPrompts.size;
-      const decision = decideReasoningEffort(promptText, ladder);
+      const decision = await decideReasoningEffortAsync(promptText, ladder);
       rememberDecision({
         sessionId,
         effort: decision.matchedEffort,
