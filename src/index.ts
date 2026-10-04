@@ -43,22 +43,124 @@ function currentAgent(ctx: any): any {
   }
 }
 
-/** 取会话中最后一条用户消息的纯文本，作为复杂度评分的输入。 */
-export function lastUserPromptText(session: any): string {
-  const messages: any[] = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message?.role !== 'user' || !Array.isArray(message.content)) continue;
-    const text = message.content
-      .filter((block: any) => block?.type === 'text')
-      .map((block: any) => String(block.text ?? ''))
-      .join('\n')
-      .trim();
+/** 把一条消息的文本块拼成纯文本。 */
+function textOfContent(content: any): string {
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((block: any) => block?.type === 'text')
+    .map((block: any) => String(block.text ?? ''))
+    .join('\n')
+    .trim();
+}
+
+/**
+ * 从**原始会话事件日志**倒序取最后一条真实用户消息。
+ *
+ * 2026-10-04 实测：`agent/request` 触发时 `session.deriveMessages()` 返回 0 条
+ * （消息还没投影进 surface），但同一时刻 `session.snapshotEvents()` 有 57 条事件
+ * —— 原始日志才是这个时机唯一可用的取数源。官方 `dsh-session-title` 取首条提示词
+ * 也是走 `collectSessionTitleMessages(session.snapshotEvents())`。
+ * 判据照抄官方 `sessionTitleUserMessageOf`（dsh-session-title/lib/index.js:90）：
+ *   `event.type === 'user/message' && event.data.source.kind === 'user'`
+ */
+export function promptFromEvents(session: any): string {
+  const events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : void 0;
+  if (!Array.isArray(events)) return '';
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event?.type !== 'user/message' || event?.data?.source?.kind !== 'user') continue;
+    const text = textOfContent(event.data.content);
     if (text) return text;
   }
   return '';
 }
 
+/** 从 agent 冻结的本轮消息里取最后一条真实用户文本（同一时机更直接的来源）。 */
+export function promptFromFrozenMessages(agent: any): string {
+  const messages = agent?.frozenMessages;
+  if (!Array.isArray(messages)) return '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== 'user') continue;
+    const kind = message?.source?.kind;
+    if (kind !== undefined && kind !== 'user') continue;
+    const text = textOfContent(message.content);
+    if (text) return text;
+  }
+  return '';
+}
+
+/**
+ * 从 agent 的持久 inbox 取待处理用户输入 —— **这是 agent/request 时刻唯一有货的源**。
+ *
+ * 2026-10-04 逐层实测（三次重启才定位）：
+ *   `dsh-agent-loop/lib/index.js:1179` 发 `agent/request`（本插件的挂载点），
+ *   之后 `L1262` 才 `session.deriveMessages()` 拼出本轮 messages。
+ *   用户消息在这两步【之间】才被 splice 进会话日志，所以在 agent/request 时刻：
+ *     · `session.deriveMessages()` → 0 条（surface 还空）
+ *     · `session.snapshotEvents()` → 不含该条 user/message
+ *     · `session/event` 订阅 → 慢一轮（拿到的是上一个会话）
+ *   而 `agent.inbox.nextTurn` / `nextStep` 里【已经】躺着它。
+ *   inbox 是持久投影（由 `agent/inbox/spliced` 事件折叠），见
+ *   `dsh-agent-loop/lib/index.js:70` 的 ReactLoopInbox。
+ * @param agent - agent/request 载荷上的 agent。
+ * @returns 最后一条真实用户文本，取不到时返回空串。
+ */
+export function promptFromInbox(agent: any): string {
+  let inbox: any;
+  try {
+    inbox = agent?.inbox;
+    if (inbox === null || typeof inbox !== 'object') return '';
+  } catch {
+    return '';
+  }
+  for (const target of ['nextTurn', 'nextStep']) {
+    let list: any;
+    try {
+      list = inbox[target];
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(list)) continue;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const message = list[i];
+      if (message?.role !== 'user') continue;
+      const kind = message?.source?.kind;
+      if (kind !== undefined && kind !== 'user') continue;
+      const text = textOfContent(message.content);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+/**
+ * 取会话中最后一条**真实用户**消息的纯文本，作为复杂度评分的输入。
+ *
+ * ⚠️ 不能只看 `role === 'user'`：DSH 把 AGENTS.md、运行时快照、技能目录
+ * 也当成 user 消息注入，而且**排在真实提示词之后**（2026-10-04 实测）。
+ * 只按角色取「最后一条」会取到技能目录，评分恒为 2（routine），
+ * 表现为「Auto 永远是 low」。
+ *
+ * 官方判据 = `message.source.kind`：真实用户输入是 `'user'`，
+ * 注入分别是 `agent-instructions` / `runtime-context` / `skill-catalog`。
+ * 缺 `source` 的消息（合成数据、旧格式）按未知处理，不排除。
+ *
+ * ⚠️ 这只是【历史兜底】：真实宿主里 `agent/request` 触发时它恒返回空串
+ * （surface 还是空的），必须先用 {@link promptFromFrozenMessages} / {@link promptFromEvents}。
+ */
+export function lastUserPromptText(session: any): string {
+  const messages: any[] = typeof session?.deriveMessages === 'function' ? session.deriveMessages() : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== 'user' || !Array.isArray(message.content)) continue;
+    const kind = message.source?.kind;
+    if (kind !== undefined && kind !== 'user') continue;
+    const text = textOfContent(message.content);
+    if (text) return text;
+  }
+  return '';
+}
 /**
  * 默认参考 Pi 架构保留的核心轻量工具白名单：
  * 保留低延迟单步交互、问答确认、目标追踪与单文件快速读取，其余一律收敛进沙箱
@@ -148,7 +250,15 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
   // 且 cordis 的 next() 不吃实参，改不动。agent/request 的返回值直接喂给 llm.prepareCall。
   // global+prepend：跨 agent 作用域都命中，且排在 dsh-agent 自己的模型选择监听之前成为最外层。
   const autoReasoning = config.autoReasoning === true;
-  const autoStats = { seen: 0, lastIncoming: 'never', lastOutgoing: 'never', lastAgentSource: 'never' };
+  const autoStats = {
+    seen: 0,
+    lastIncoming: 'never',
+    lastOutgoing: 'never',
+    lastAgentSource: 'never',
+    lastPromptText: '',
+    lastCacheSize: 0,
+    lastPromptSource: '',
+  };
   // 决策必须按会话隔离：agent/request 是全局瀑布，单槽变量会让所有会话的胶囊
   // 显示同一条（最近一次）记录。Map 保留插入序，超上限时淘汰最旧的会话。
   const autoDecisions = new Map<string, AutoEffortDecision>();
@@ -161,6 +271,58 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
       autoDecisions.delete(oldest);
     }
   };
+
+  // 真实人类提示词缓存 —— 挂 `agent/inbox/spliced`，**不是** `user/message`。
+  //
+  // 2026-10-04 读 dsh-agent-loop/lib/index.js 定案的硬时序：
+  //   L906   inbox.claim()            从 inbox 取走本轮输入
+  //   L1050  prepareRequest()
+  //   L1179    └ waterfall("agent/request")   ← 本插件挂载点
+  //   L1061  session.append("user/message")   ← 用户消息【之后】才写进日志
+  //   L1063  buildRequest()
+  // 所以在 agent/request 那一刻，本轮提示词被 loop 攥在局部变量里，
+  // deriveMessages / snapshotEvents / inbox / session/event(user/message) 四条路【全都】取不到
+  // —— 不是写法错，是那一刻系统里根本还没有这条数据（三次重启逐条排除后确认）。
+  //
+  // 唯一早于该时刻的入口 = 用户提交时的 inbox 写入事件 `agent/inbox/spliced`
+  // （dsh-agent-loop/lib/index.js:33 的 inbox 投影就是折叠它）。
+  // 判据照抄官方 dsh-session-title/lib/index.js:90 的 sessionTitleUserMessageOf：
+  //   source.kind === 'user'（AGENTS.md / runtime-context / skill-catalog 都不是）
+  // 双索引：宿主里 agent.id 与 session.id 未必同串（实测缓存有条目却查不中），
+  // 所以同时按会话对象(WeakMap, 引用相等最可靠)与按 id 字符串(Map, 兜底)存一份。
+  const promptBySession = new WeakMap<object, string>();
+  const lastHumanPrompts = new Map<string, string>();
+  const cachePrompt = (session: any, text: string) => {
+    if (text === '') return;
+    if (session !== null && typeof session === 'object') promptBySession.set(session, text);
+    const id = String(session?.id ?? '');
+    if (id === '') return;
+    lastHumanPrompts.delete(id);
+    lastHumanPrompts.set(id, text);
+    while (lastHumanPrompts.size > AUTO_DECISION_CAP) {
+      const oldest = lastHumanPrompts.keys().next().value;
+      if (oldest === undefined) break;
+      lastHumanPrompts.delete(oldest);
+    }
+  };
+  (ctx as any).on('session/event', (session: any, event: any) => {
+    // 主路径：inbox 写入（用户提交那一刻，早于回合开始）
+    if (event?.type === 'agent/inbox/spliced') {
+      const splice = event.data ?? {};
+      if (splice.target !== 'next-turn' || !Array.isArray(splice.inserted)) return;
+      for (const message of splice.inserted) {
+        if (message?.role !== 'user') continue;
+        const kind = message?.source?.kind;
+        if (kind !== undefined && kind !== 'user') continue;
+        cachePrompt(session, textOfContent(message.content));
+      }
+      return;
+    }
+    // 兜底：消息落盘后（比请求晚，但对【下一轮】的请求仍然有效）
+    if (event?.type === 'user/message' && event?.data?.source?.kind === 'user') {
+      cachePrompt(session, textOfContent(event.data.content));
+    }
+  }, { global: true });
 
   (ctx as any).on('agent/request', async (payload: any, next: () => Promise<any>) => {
     const resolved = await next();
@@ -191,7 +353,30 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         autoStats.lastOutgoing = '<omitted:no-ladder>';
         return withoutSentinel;
       }
-      const decision = decideReasoningEffort(lastUserPromptText(agent?.session), ladder);
+      // 取数优先级（2026-10-04 逐条实测定的序，别调换）：
+      //  1/2. session/event 缓存 —— 由 agent/inbox/spliced（用户提交那一刻）喂，是唯一早于本请求的源
+      //  3.   agent.inbox —— 本请求前已被 claim() 取走，通常为空
+      //  4.   session.snapshotEvents() —— 本轮 user/message 在 L1061 才落盘，此处还没有
+      //  5.   deriveMessages() —— 该时机恒为空，仅历史兼容
+      const byObject =
+        agent?.session !== null && typeof agent?.session === 'object'
+          ? promptBySession.get(agent.session)
+          : void 0;
+      const candidates: Array<[string, string]> = [
+        ['cache-obj', byObject ?? ''],
+        ['cache-id', lastHumanPrompts.get(sessionId) ?? ''],
+        ['cache-session', lastHumanPrompts.get(String(agent?.session?.id ?? '')) ?? ''],
+        ['inbox', promptFromInbox(agent)],
+        ['events', promptFromEvents(agent?.session)],
+        ['frozen', promptFromFrozenMessages(agent)],
+        ['derive', lastUserPromptText(agent?.session)],
+      ];
+      const hit = candidates.find(([, text]) => text !== '');
+      const promptText = hit === void 0 ? '' : hit[1];
+      autoStats.lastPromptText = promptText.slice(0, 80);
+      autoStats.lastPromptSource = hit === void 0 ? '<none>' : hit[0];
+      autoStats.lastCacheSize = lastHumanPrompts.size;
+      const decision = decideReasoningEffort(promptText, ladder);
       rememberDecision({
         sessionId,
         effort: decision.matchedEffort,
