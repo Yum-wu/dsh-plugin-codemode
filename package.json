@@ -10,25 +10,16 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
-    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation"
-      ],
-      "platform": "web",
-      "immediately": true
     }
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/*.test.js",
-    "test:jev": "node --test test/jev-integration.test.js"
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "dsh",

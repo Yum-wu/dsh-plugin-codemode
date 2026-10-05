@@ -44,8 +44,11 @@ export interface CodeModeConfig {
   collapseTopLevelTools?: boolean;
   /** 当 collapseTopLevelTools 开启时，允许保留在顶层暴露的核心轻量工具白名单 */
   allowedTopLevelTools?: string[];
-  /** 是否接管思考档位 (Auto Reasoning Effort)，默认 false，必须显式开启 */
-  autoReasoning?: boolean;
+  // 2026-10-05 移除 `autoReasoning`：思考档位已拆为独立插件 dsh-auto-reasoning
+  // （https://github.com/Yum-wu/dsh-auto-reasoning），随 dsh-jev-preset 一起装。
+  // ⚠ profile 的 cordis.patch.yml 里若还留着 autoReasoning，cordis 会因未知键
+  //   让整条 plugin-codemode entry 不激活 —— 表现为「codemode 工具凭空消失」。
+  //   改配置时记得把它一起删掉。
 }
 
 export interface CodeModeArgs {

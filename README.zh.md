@@ -211,66 +211,31 @@ npm run build
 | `maxResultChars` | `number` | `50000` | 返回给模型主上下文的最大字符上限。 |
 | `timeoutMs` | `number` | `60000` | 脚本单次执行的硬超时熔断时限（毫秒）。 |
 | `injectGuidance` | `boolean` | `true` | 是否向模型系统提示词自动注入 Code Mode 编排指南。 |
-| `autoReasoning` | `boolean` | `false` | 是否接管思考档位 (Auto Reasoning Effort)，**必须显式开启**，见下节。 |
 
 ---
 
-## 🧠 自适应思考档位 (Auto Reasoning Effort)
+## 🧠 自适应思考档位 (Auto Reasoning Effort) — 已迁出（2026-10-05）
 
-把模型配置里的 `reasoningEffort` 写成哨兵值 **`auto`**，并在本插件配置里打开 **`autoReasoning: true`**，
-插件会按当前任务的复杂度，在**该模型真实支持的档位阶梯**内投影出一个合法档位再发请求。
+本插件**不再**实现思考档位选择，该能力已拆为独立插件：
+**[dsh-auto-reasoning](https://github.com/Yum-wu/dsh-auto-reasoning)**。
 
-```yaml
-# cordis.patch.yml
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: opencodex
-    model: google-antigravity/gemini-3.8-flash
-    reasoningEffort: auto          # <- 哨兵
-- id: plugin-codemode
-  name: 'dsh-plugin-codemode'
-  config:
-    autoReasoning: true            # <- 不打开就完全不介入
-```
+**为什么迁走**：原先的代码挂平台钩子 `agent/request`、读 `agent/session` + `session/event`、
+调 `ctx.llm.resolveModelInfo()`、注册宿主 `/api` 路由 —— **没有一行属于 codemode 的
+沙箱 / tool-bridge / truncator**。钩子位置是对的，插件身份是错的。
 
-两个条件缺一不可：只写 `auto` 而不开 `autoReasoning`，`auto` 会原样交给宿主并抛
-`UNSUPPORTED_REASONING_EFFORT`；只开 `autoReasoning` 而档位不是 `auto`（用户手选过、
-或会话 header 里已存着具体值），插件一律放行不碰。
+**现在两者怎么接线**：`dsh-auto-reasoning` 的声明行由 **dsh-jev-preset** 的 bundle 顺带 insert
+（同一个 insert 组里的第二条），所以装 JEV preset 就带上 auto 档位。codemode 不再与此有关。
 
-| 要点 | 说明 |
-|---|---|
-| 生效位置 | 挂在 cordis 的 `agent/request` waterfall 上（`{global, prepend}`），返回值直接喂给 `llm.prepareCall`。 |
-| 为什么不能挂 `llm/stream` | 那条流水线的 `options` 对 agent-loop 请求是 `deepFreeze` 的，且 cordis 的 `next(x)` 忽略实参，改不动。 |
-| 档位来源 | `ctx.llm.resolveModelInfo(provider, model).reasoning.efforts`，即模型自己的阶梯，不硬编码。 |
-| 评分口径 | 确定性关键词分级 1–10（`auto-reasoning.ts`）：并发/死锁/资金风控=9，推导/重构=7，常规开发=5，日常问答=2。 |
-| 兜底 | 拿不到阶梯或 `resolveModelInfo` 抛错时，**省略** `reasoningEffort` 让模型用自己的默认档；绝不把 `auto` 交回宿主。 |
-| 状态可见 | 只读路由 `GET /api/codemode.auto-effort?sessionId=<id>`（走宿主共享 `/api` 通道，受同源鉴权保护），输入框底栏胶囊每 3s 轮询。 |
-| 会话隔离 | 决策按 **`sessionId`** 归档（LRU，上限 50，见 `AUTO_DECISION_CAP`）。`agent/request` 是**全局**瀑布，早先用单个模块级变量存"最近一条"，导致所有会话的胶囊显示同一条记录。会话 id 取自 `payload.agent.id`，取不到则退回 `ctx.get('agents').currentInitiator()` —— 真实宿主发射的载荷只有 `{turn, step, signal}`，所以实际生效的是 initiator 那条路（端点用 `lastAgentSource` 回报走了哪条）。 |
+> ⚠️ **务必把 profile 的 `cordis.patch.yml` 里 `autoReasoning: true` 删掉。** 该配置项已不存在，
+> 而 cordis 是按**整条 entry** 校验配置的 —— 留着未知键会让整条 `plugin-codemode` 不激活，
+> 表现为「codemode 工具凭空消失」。
 
-### 让模型拾取器出现 `Auto`
+> ⚠️ **不要在模型的 `reasoningEfforts` 里加 `auto: auto`。** 这条建议曾经写在本 README 里，
+> 它是**错的**：`auto` 不是合法档位键（合法只有 `off/minimal/low/medium/high/xhigh/max`），
+> 在那里声明会让整条 provider entry 不激活 —— 它下面**所有**模型都会从下拉框消失。
+> 2026-10-04 对真实 profile 实测确认；现已加守卫测试（DeepSeekHarness 的
+> `tests/11-cordis-efforts-schema.test.mjs`）。
 
-拾取器的档位菜单**完全按模型声明的 `reasoningEfforts` 生成**，所以必须把 `auto` 列进去，
-菜单里才会有这一项：
-
-```yaml
-- id: google-antigravity/gemini-3.8-flash
-  reasoningEfforts:
-    auto: auto            # <- 拾取器里多出 "auto" 这一项
-    low: low
-    medium: medium
-    high: high
-```
-
-在 `dsh-0.2.0-rc.2` 上实测（2026-10-04）：声明 `auto: auto` 后拾取器确实出现 `Auto`，
-选中后发往 `agent/request` 的 `reasoningEffort` 就是 `'auto'`，插件在请求出站前把它换成合法档位，
-胶囊随之按投影结果变绿/黄/红/紫。
-
-> ⚠️ `auto` **不是** DSH 的档位键（合法递进集合只有 `off/minimal/low/medium/high/xhigh/max`），
-> 它在这里只是一个**拾取器哨兵**，必须由本插件改写掉。绝不能让 `auto` 真的落到
-> `llm.prepareCall` —— 插件的兜底路径是**省略该字段**，而不是把它交回去。
-
----
 
 ## 🛟 三级零风险回滚策略
 

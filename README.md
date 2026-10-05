@@ -209,68 +209,35 @@ Restart the DSH service from your desktop management console. The agent will imm
 | `maxResultChars` | `number` | `50000` | Maximum length of distilled output returned to context. |
 | `timeoutMs` | `number` | `60000` | Hard deadline per script before auto-termination. |
 | `injectGuidance` | `boolean` | `true` | Injects Code Mode orchestration tips into system prompt. |
-| `autoReasoning` | `boolean` | `false` | Enables Auto Reasoning Effort takeover. **Must be turned on explicitly** — see below. |
 
 ---
 
-## 🧠 Auto Reasoning Effort
+## 🧠 Auto Reasoning Effort — moved out (2026-10-05)
 
-Set `reasoningEffort` to the sentinel **`auto`** in your model config **and** turn on
-**`autoReasoning: true`** in this plugin's config; the plugin then projects a legal tier based on
-task complexity onto the model's real effort ladder before the request goes out.
+This plugin no longer implements reasoning-effort selection. It now lives in a standalone
+plugin: **[dsh-auto-reasoning](https://github.com/Yum-wu/dsh-auto-reasoning)**.
 
-```yaml
-# cordis.patch.yml
-- id: agent-default-model
-  name: "@deepseek-ai/dsh-agent-default-model"
-  config:
-    provider: opencodex
-    model: google-antigravity/gemini-3.8-flash
-    reasoningEffort: auto          # <- sentinel
-- id: plugin-codemode
-  name: 'dsh-plugin-codemode'
-  config:
-    autoReasoning: true            # <- without this the plugin never intervenes
-```
+**Why it moved.** The old code here mounted the platform hook `agent/request`, read
+`agent/session` + `session/event`, called `ctx.llm.resolveModelInfo()` and registered a
+host `/api` route — **not one line of it belonged to codemode's sandbox / tool-bridge /
+truncator.** The hook position was right; the plugin identity was wrong.
 
-Both are required: `auto` alone is handed to the host and raises `UNSUPPORTED_REASONING_EFFORT`;
-`autoReasoning` alone does nothing unless the incoming tier really is `auto` (a manually picked
-tier, or one already stored in the session header, is always left untouched).
+**How the two are wired now.** The declaration row for `dsh-auto-reasoning` is shipped by the
+**dsh-jev-preset** bundle (same insert group, second row), so installing the JEV preset brings
+auto effort with it. codemode is not involved either way.
 
-| Aspect | Detail |
-|---|---|
-| Hook | cordis `agent/request` waterfall, registered `{global, prepend}`; the return value goes straight into `llm.prepareCall`. |
-| Why not `llm/stream` | Its `options` is `deepFreeze`d for agent-loop requests, and cordis `next(x)` ignores arguments — the tier cannot be changed there. |
-| Ladder source | `ctx.llm.resolveModelInfo(provider, model).reasoning.efforts` — never hardcoded. |
-| Scoring | Deterministic 1-10 keyword tiers (`auto-reasoning.ts`): concurrency/deadlock/risk = 9, derivation/refactor = 7, routine dev = 5, lookup = 2. |
-| Fallback | No ladder or a failing `resolveModelInfo` -> **omit** `reasoningEffort` so the model default applies. `auto` is never handed back to the host. |
-| Visibility | Read-only route `GET /api/codemode.auto-effort?sessionId=<id>` on the host's shared `/api` channel (same-origin auth applies); the composer-dock pill polls it every 3s. |
-| Session isolation | Decisions are archived **per `sessionId`** (LRU, cap 50, `AUTO_DECISION_CAP`). `agent/request` is a *global* waterfall, so a single module-level slot made every conversation's pill show the same "most recent" record. The session id comes from `payload.agent.id`, falling back to `ctx.get('agents').currentInitiator()` — the real host dispatches `agent/request` with `{turn, step, signal}` only, so the initiator boundary is the path that resolves in practice (`lastAgentSource` reports which one fired). |
+> ⚠️ **Remove `autoReasoning: true` from your profile's `cordis.patch.yml`.** The config key no
+> longer exists, and cordis validates a whole entry at once — a leftover unknown key makes the
+> entire `plugin-codemode` entry fail to activate, which shows up as *"the codemode tool
+> vanished"*.
 
-### Showing `Auto` in the model picker
+> ⚠️ **Do not add `auto: auto` to a model's `reasoningEfforts`.** That advice used to live in this
+> README and it is **wrong**: `auto` is not a legal effort key (the legal set is
+> `off/minimal/low/medium/high/xhigh/max`), and declaring it there makes the whole provider
+> entry fail to activate — every model under it disappears from the picker. Verified against a
+> real profile on 2026-10-04; a guard test now ships in DeepSeekHarness
+> (`tests/11-cordis-efforts-schema.test.mjs`).
 
-The picker's effort menu is built verbatim from the model's declared `reasoningEfforts`,
-so `auto` has to be listed there for the entry to exist at all:
-
-```yaml
-- id: google-antigravity/gemini-3.8-flash
-  reasoningEfforts:
-    auto: auto            # <- adds the "auto" entry to the picker
-    low: low
-    medium: medium
-    high: high
-```
-
-Verified on `dsh-0.2.0-rc.2` (2026-10-04): with `auto: auto` declared, the picker offers
-`Auto`, selecting it sends `reasoningEffort: 'auto'` to `agent/request`, and the plugin
-replaces it before the request leaves. The pill turns green/amber/red/purple per projected tier.
-
-> ⚠️ `auto` is **not** a DSH effort key (the legal escalation set is
-> `off/minimal/low/medium/high/xhigh/max`), so it is only meaningful as a *picker sentinel*
-> that this plugin always rewrites. Never leave `auto` as the value actually handed to
-> `llm.prepareCall` — the plugin's fallback path omits the field rather than doing that.
-
----
 
 ## 🛟 3-Level Zero-Risk Rollback Strategy
 
