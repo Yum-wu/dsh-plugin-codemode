@@ -20,6 +20,10 @@
    - 默认截断上限 50,000 字符。
 4. **硬超时熔断**：
    - 单次脚本默认执行硬超时 60,000ms（可配置），超时强制销毁沙箱上下文并报错返回，杜绝死循环挂死宿主。
+5. **顶层工具白名单是「整体替换」而非「追加」**：`collapseTopLevelTools: true` 时，暴露给模型的工具集 = `new Set(config.allowedTopLevelTools || DEFAULT_CORE_TOOLS)`。
+   未列出的工具**从顶层静默消失**（不报错、不告警，模型只是看不见）。实测 2026-10-05：本数组只有 11 项，而运行时注册的非 MCP 工具 36 个 ⇒ **吞掉 24 个**，连 `subagent` 都在里面。
+   - **改这个数组时必须同步三处**：`src/index.ts` 的 `DEFAULT_CORE_TOOLS`、目标 profile 的 `allowedTopLevelTools`、以及 DeepSeekHarness `tests/12-tool-whitelist.test.mjs` 的期望集。
+   - ⚠ 本仓 `lib/` 是 **gitignored 的构建产物** —— 改完 `src/` 必须 `npm run build`，否则 profile 的 junction 仍指向旧代码。
 
 ---
 
@@ -47,9 +51,11 @@ dsh-plugin-codemode/
 │   ├── tool-bridge.ts  # tools.* 动态 Proxy 代理与 DSH ctx.tools 执行桥接
 │   ├── truncator.ts    # 输出收集、日志格式化与安全截断
 │   └── types.ts        # 接口与配置 Schema 定义
-└── test/
-    ├── sandbox.test.ts # 沙箱隔离性与基本 JS 语法测试
-    └── bridge.test.ts  # 工具代理并发与截断测试
+└── test/                       # 共 10 例：`node --test test/*.test.js`
+    ├── sandbox.test.js          # 4 例：基础求值 / console.log 捕获 / 隔离性(无 Node API 泄露) / 硬超时断开死循环
+    ├── bridge.test.js           # 3 例：Promise.all 并发 / 拒绝自递归调用 / 超长输出截断
+    ├── apply-guard.test.js      # 2 例：apply() 禁用 ctx.waterfall / auto 迁走后不再依赖 llm+connection
+    └── bundle-declaration.test.js # 1 例：dsh.bundle.patch 声明被宿主正确解析(无运行时时 skip)
 ```
 
 ---

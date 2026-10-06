@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-plugin-codemode.svg)](https://www.npmjs.com/package/dsh-plugin-codemode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: DeepSeek Harness](https://img.shields.io/badge/Platform-DeepSeek%20Harness-black.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![Tests: Passing](https://img.shields.io/badge/Tests-7%2F7%20Pass-brightgreen.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-10%2F10%20Pass-brightgreen.svg)]()
 [![Engine: Dual (V8 VM + QuickJS)](https://img.shields.io/badge/Engine-Dual%20(V8%20VM%20%2B%20QuickJS)-orange.svg)]()
 
 > **English** | [中文说明](README.zh.md)
@@ -209,6 +209,12 @@ Restart the DSH service from your desktop management console. The agent will imm
 | `maxResultChars` | `number` | `50000` | Maximum length of distilled output returned to context. |
 | `timeoutMs` | `number` | `60000` | Hard deadline per script before auto-termination. |
 | `injectGuidance` | `boolean` | `true` | Injects Code Mode orchestration tips into system prompt. |
+| `collapseTopLevelTools` | `boolean` | `false` | When on, **only whitelisted tools stay visible at the top level**; the rest vanish from the model’s view. |
+| `allowedTopLevelTools` | `string[]` | `DEFAULT_CORE_TOOLS` (37 items) | The whitelist. ⚠ **Full-replacement semantics** (not additive) — see warning below. |
+
+> ⚠️ **`allowedTopLevelTools` REPLACES the default, it does not extend it.** The implementation is `new Set(config.allowedTopLevelTools || DEFAULT_CORE_TOOLS)` — once you set this array, `DEFAULT_CORE_TOOLS` is **ignored entirely**.
+> Tools you leave out **disappear from the top level silently**: no error, no warning, nothing in the logs. The model simply cannot see them.
+> Measured 2026-10-05: the old `DEFAULT_CORE_TOOLS` had only 11 entries while the runtime registered 36 non-MCP tools — 24 were swallowed, `subagent` among them. Now completed to 37 entries with a guard test. |
 
 ---
 
@@ -254,14 +260,11 @@ auto effort with it. codemode is not involved either way.
 ```bash
 npm test
 ```
-Runs the test suite (21 cases) verifying:
-- Parallel `Promise.all` multi-tool execution.
-- Recursive invocation guards.
-- Isolation boundaries (no Node process/require leaks).
-- Output truncation and formatting.
-- Infinite loop timeout aborts.
-- Auto-effort sentinel rewriting against a real cordis dispatcher (ladder projection, `prepend` ordering, fallback paths).
-- Per-session decision isolation, bounded archival, and the `currentInitiator()` fallback.
+Runs the unit suite (**10 cases**, `node --test test/*.test.js`):
+- `sandbox.test.js` (4): basic evaluation and return values, `console.log`/`text()` capture, isolation (no Node process/filesystem leaks), hard timeout on infinite loops.
+- `bridge.test.js` (3): `Promise.all` parallel tool execution, rejection of recursive `codemode` calls, oversized-output truncation.
+- `apply-guard.test.js` (2): regression guards — `apply()` must never call `ctx.waterfall` (it is an emitter; doing so took the host down as fatal on 2026-10-03), and `apply()` no longer depends on the `llm`/`connection` services after auto-effort moved out.
+- `bundle-declaration.test.js` (1): the `dsh.bundle.patch` declaration is parsed correctly by the host (skipped when no DSH runtime is present).
 
 ---
 

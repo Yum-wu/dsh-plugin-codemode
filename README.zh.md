@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-plugin-codemode.svg)](https://www.npmjs.com/package/dsh-plugin-codemode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: DeepSeek Harness](https://img.shields.io/badge/Platform-DeepSeek%20Harness-black.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![Tests: Passing](https://img.shields.io/badge/Tests-7%2F7%20Pass-brightgreen.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-10%2F10%20Pass-brightgreen.svg)]()
 [![Engine: Dual (V8 VM + QuickJS)](https://img.shields.io/badge/Engine-Dual%20(V8%20VM%20%2B%20QuickJS)-orange.svg)]()
 
 > [English](README.md) | **中文说明**
@@ -211,6 +211,12 @@ npm run build
 | `maxResultChars` | `number` | `50000` | 返回给模型主上下文的最大字符上限。 |
 | `timeoutMs` | `number` | `60000` | 脚本单次执行的硬超时熔断时限（毫秒）。 |
 | `injectGuidance` | `boolean` | `true` | 是否向模型系统提示词自动注入 Code Mode 编排指南。 |
+| `collapseTopLevelTools` | `boolean` | `false` | 开启后**顶层只暴露白名单内的工具**，其余从模型视野里消失。 |
+| `allowedTopLevelTools` | `string[]` | `DEFAULT_CORE_TOOLS`（37 项） | 白名单。⚠ **整体替换语义**（非追加），详见下方警告。 |
+
+> ⚠️ **`allowedTopLevelTools` 是「整体替换」，不是「追加」。** 实现是 `new Set(config.allowedTopLevelTools || DEFAULT_CORE_TOOLS)` —— 你写了这个数组，`DEFAULT_CORE_TOOLS` 就**完全不生效**。
+> 未列出的工具**从顶层静默消失**：不报错、不告警、日志里也没有，模型只是看不见它。
+> 2026-10-05 实测：本插件旧版 `DEFAULT_CORE_TOOLS` 只有 11 项，而运行时注册的非 MCP 工具有 36 个 —— 静默吞掉 24 个，`subagent` 也在里面。现已补全到 37 项，并有守卫测试。
 
 ---
 
@@ -252,14 +258,11 @@ npm run build
 ```bash
 npm test
 ```
-执行全量自动化单元测试（21 例）：
-- `Promise.all` 批量多工具并发执行验证。
-- 递归调用自身拦截验证。
-- 原生安全沙箱隔离性检验（绝无 Node 进程/文件等宿主权限泄露）。
-- 输出长文本安全截断与格式化。
-- 死循环超时强制中断。
-- 用真实 cordis 调度器验证 `auto` 哨兵改写（阶梯投影、`prepend` 顺序、两条兜底路径）。
-- 会话级决策隔离、归档上限、以及 `currentInitiator()` 退回路径。
+执行全量单元测试（**10 例**，`node --test test/*.test.js`）：
+- `sandbox.test.js`（4）：基础求值与返回值、`console.log`/`text()` 捕获、隔离性（绝无 Node 进程/文件等宿主权限泄露）、死循环硬超时中断。
+- `bridge.test.js`（3）：`Promise.all` 并发工具执行、拒绝自递归调用 `codemode`、超长输出安全截断。
+- `apply-guard.test.js`（2）：回归护栏 —— `apply()` 里禁止调用 `ctx.waterfall`（它是发射器，2026-10-03 曾把宿主炸成 fatal）；以及 auto 迁走后 `apply()` 不再依赖 `llm`/`connection` 服务。
+- `bundle-declaration.test.js`（1）：`dsh.bundle.patch` 声明被宿主正确解析（无运行时时 skip）。
 
 ---
 
