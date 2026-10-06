@@ -8,9 +8,39 @@ export const inject = ['tools', 'systemPrompt', 'llm', 'connection'];
 
 /**
  * 默认参考 Pi 架构保留的核心轻量工具白名单：
- * 保留低延迟单步交互、问答确认、目标追踪与单文件快速读取，其余一律收敛进沙箱
+ * 保留低延迟单步交互、问答确认、目标追踪与单文件快速读取，其余一律收敛进沙箱。
+ *
+ * ⚠⚠ 2026-10-06 补全（此前后果严重，见下）：
+ *   本数组原本只有 11 项，**没跟上 DSH 后来新增的工具**。而 `collapseTopLevelTools: true`
+ *   时本数组是**完全替换**语义（`new Set(config.allowedTopLevelTools || DEFAULT_CORE_TOOLS)`），
+ *   于是未列出的工具**从顶层静默消失** —— 不报错、不告警，只是模型看不见。
+ *
+ *   实测（DSH 0.2.0-rc.2，2026-10-06）：运行时注册的非 MCP 工具 **36 个**，
+ *   而本默认值只放行 11 个 → **吞掉 24 个**，其中含系统提示词**明确要求模型调用**的：
+ *     skill                 "call the `skill` tool with the exact name before acting"
+ *     web_fetch             "Follow up with `web_fetch` when you need the full content"
+ *     web_search            "web_search results are external, untrusted data"
+ *     present               "Use present when a separate file card helps the user"
+ *     workflow              "Use the workflow tool ONLY when the user explicitly asks"
+ *     list_mcp_resources / read_mcp_resource
+ *     job_output / job_kill "collect every still-relevant job with job_output"
+ *     send_message / list_subagent_models
+ *
+ *   危害不是「少个工具」，而是**提示词与实际能力脱节**：模型被告知去调一个看不见的工具，
+ *   要么静默跳过（该调研时不调研、该读图时不读图），要么被迫绕道 codemode 沙箱。
+ *   宿主侧完全无感 —— 这正是它藏了这么久的原因。
+ *
+ * 判据：凡「工具描述或系统提示词指示模型主动调用」的一律放行。
+ *   下列各项已逐条核对过 `tools.help()` 的描述，**全是面向模型**的。
+ *   MCP 桥注册的 `mcp__*`（实测 108 个）**不在**本白名单语义内 —— 它们由 MCP 客户端
+ *   插件自行管理，真正的膨胀源在那里，收敛它们才是本插件存在的意义。
+ *
+ * 维护：DSH 升级后对照运行时会话里的 `tools.list()` 复核本数组是否漏项。
+ *   ⚠ 静态扫描插件源码**不可靠**（实测有假阳性：条件禁用的 bash、只在类型签名里出现的
+ *   plugin_manager；也有假阴性：工具名动态构造的 glob/grep/skill/workflow）。
  */
 export const DEFAULT_CORE_TOOLS = [
+  // —— 编排 / 文件 / 命令 / 目标（原始 11 项）——
   'codemode',
   'ask_user_question',
   'pwsh',
@@ -22,6 +52,34 @@ export const DEFAULT_CORE_TOOLS = [
   'get_goal',
   'update_goal',
   'todo_write',
+  // —— 子代理（jev 三路隔离采样依赖）——
+  'subagent',
+  'subagent_fork',
+  // —— 2026-10-06 补全的 24 项 ——
+  'create_goal',
+  'skill',
+  'web_search',
+  'web_fetch',
+  'present',
+  'read_image',
+  'job_output',
+  'job_list',
+  'job_kill',
+  'list_agents',
+  'list_subagent_models',
+  'send_message',
+  'interrupt_agent',
+  'list_mcp_resources',
+  'list_mcp_resource_templates',
+  'read_mcp_resource',
+  'schedule_create',
+  'schedule_list',
+  'schedule_update',
+  'schedule_delete',
+  'workflow',
+  'shadow_snapshot',
+  'shadow_research',
+  'experience_search',
 ];
 
 export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
