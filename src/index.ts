@@ -197,6 +197,7 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
         script: args.script,
         bridge,
         engine: config.engine,
+        hardIsolation: config.hardIsolation === true,
         maxResultChars,
         timeoutMs,
       });
@@ -222,5 +223,6 @@ export function apply(ctx: DshContext, config: CodeModeConfig = {}) {
 
 export * from './types.js';
 export * from './sandbox.js';
+export * from './worker-sandbox.js';
 export * from './tool-bridge.js';
 export * from './truncator.js';

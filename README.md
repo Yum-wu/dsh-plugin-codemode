@@ -3,13 +3,13 @@
 [![npm version](https://img.shields.io/npm/v/dsh-plugin-codemode.svg)](https://www.npmjs.com/package/dsh-plugin-codemode)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: DeepSeek Harness](https://img.shields.io/badge/Platform-DeepSeek%20Harness-black.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![Tests: Passing](https://img.shields.io/badge/Tests-10%2F10%20Pass-brightgreen.svg)]()
+[![Tests: Passing](https://img.shields.io/badge/Tests-37%2F37%20Pass-brightgreen.svg)]()
 [![Engine: Dual (V8 VM + QuickJS)](https://img.shields.io/badge/Engine-Dual%20(V8%20VM%20%2B%20QuickJS)-orange.svg)]()
 
 > **English** | [中文说明](README.zh.md)
 
 **Pi-style Code Mode (Programmatic Tool Calling) for DeepSeek Harness (DSH).**  
-Turn verbose O(N) multi-turn ReAct loops into a single O(1) JavaScript orchestration script executed in an isolated memory sandbox.
+Turn verbose O(N) multi-turn ReAct loops into a single O(1) JavaScript orchestration script executed in a memory-isolated sandbox — see [Security Model](#-security-model) for what that does and does **not** guarantee.
 
 ---
 
@@ -98,10 +98,70 @@ With Code Mode, the agent writes a concise JavaScript async function. The script
     - `tools.list()`: Returns the full array of registered tool names in memory.
     - `tools.help('namePattern')`: Inspects parameters and JSON Schemas on-demand inside the sandbox, cutting system prompt bloat by over 90%.
 - **🛡 Hard-Safety Protections**:
-  - Configurable hard timeout (default 60,000 ms) kills infinite loops automatically.
+  - **Hard timeout** (default 60,000 ms). The host channel yields a macrotask and re-checks the
+    deadline on every tool call, so `await`-driven infinite loops are **terminated** instead of
+    starving the event loop. Pure synchronous loops are caught by V8's own `runInContext` timeout.
+  - **Escape guard test suite** (`test/escape.test.js`, 11 cases) pins 10 known `node:vm`
+    prototype-chain escape vectors plus a host-process probe. See [Security Model](#-security-model).
+  - **QuickJS tool-loop guard** (`test/quickjs-tool-loop.test.js`, 6 cases) pins sequential
+    cross-WASM tool orchestration.
   - Recursion blocker prevents scripts from invoking `codemode` inside `codemode`.
   - Result truncator caps output at 50,000 characters to prevent accidental prompt floods.
 - **📦 Zero-Patch, 100% Reversible**: Pure dynamic Cordis extension. Modifies zero core DSH runtime files.
+
+---
+
+## 🔐 Security Model
+
+**The sandbox executes model-generated code. Treat that code as untrusted** — prompt injection
+can reach it through any tool result or file it reads.
+
+### What is enforced
+
+| Guarantee | Engine | How |
+|---|---|---|
+| No host object crosses into the sandbox | `vm`, `quickjs` | The host exposes exactly one channel and it carries **strings only**; the sandbox-side `tools` proxy and its `JSON.parse` are built *inside* the context |
+| Sandbox global has no host prototype | `vm` | `vm.createContext(Object.create(null))` — a plain literal's prototype is the **host** `Object.prototype`, which handed `globalThis.constructor` straight to the host `Function` constructor |
+| Tool return values cannot be an escape channel | `vm`, `quickjs` | Values are serialized on the host and re-parsed by the **sandbox's own** `JSON` |
+| `await`-driven infinite loops terminate | `vm` | The host channel yields a macrotask and re-checks a deadline on every call |
+| Synchronous infinite loops terminate | `vm` | V8 `runInContext({ timeout })` |
+| **Any** infinite loop terminates, including a pure `await` loop that never calls a tool | `vm` + `hardIsolation: true` | The sandbox runs in a **worker thread**, so the host's event loop stays free and `worker.terminate()` always fires. Without this flag the host and the sandbox share one event loop and **no in-process timer can fire** |
+| WASM / QuickJS-level crashes cannot take down DSH | `quickjs` + `hardIsolation: true` | The crash kills the worker; the host receives a clean failure result |
+| Sequential tool orchestration cannot kill the process | `quickjs` | Manual `newPromise` instead of `newAsyncifiedFunction` |
+| Output cannot exceed `maxResultChars` | both | The cap is applied to the **whole** rendered result, logs included |
+
+### What is **not** guaranteed
+
+- **`node:vm` is not a security boundary.** Node's own documentation states:
+  *"The `node:vm` module is not a security mechanism. Do not use it to run untrusted code."*
+  The hardening above closes **10 known prototype-chain vectors** (pinned by `test/escape.test.js`),
+  but a `vm` context still shares the host process and heap. It is a **defense-in-depth** measure,
+  not a boundary. For a real boundary, run the whole DSH process inside a container or a separate
+  OS user.
+- **`hardIsolation` defaults to `false`.** With it off, a script that loops on `await` without ever
+  calling a tool starves the shared event loop and hangs the DSH process until it is restarted.
+  Set `hardIsolation: true` in the profile config if you want that class closed.
+- **No network isolation.** The sandbox has no `fetch` because none is injected — a convenience
+  property, not an enforced capability.
+- **No approval gate.** Every tool call the script makes executes immediately; DSH's own approval
+  surface is not consulted by codemode.
+- **The `quickjs` engine is slower.** It is an interpreter (roughly 10–50× slower than V8 JIT per
+  the comparison in [Simon Willison's sandboxing research](https://github.com/simonw/research/tree/main/javascript-sandboxing-research)),
+  and it has no `setTimeout`.
+
+### Fixed vulnerabilities (2026-10-14 audit)
+
+Three defects were found by PoC and fixed the same day. Full evidence, sources and remaining gaps:
+[`docs/best-practice-research-2026-10-14.md`](docs/best-practice-research-2026-10-14.md).
+
+| ID | Defect | Evidence before fix | Fix |
+|---|---|---|---|
+| **P0-1** | Host-realm builtins injected into the `vm` context → `constructor.constructor` chain reached the host `Function` constructor | **7 of 10** escape vectors succeeded, all reaching the host `process` (`envKeyCount: 80`; `kill`/`dlopen` available) | Host channel reduced to strings; sandbox global is `Object.create(null)`; `console`/`text`/`tools` built inside the context |
+| **P0-2** | The `Promise.race` timeout used `setTimeout`, a **macrotask**; an `await` loop starved the microtask queue so it never fired | Script **hung indefinitely**; a 15 s in-script watchdog also never fired | Host channel yields a macrotask + deadline check |
+| **P0-3** | `newAsyncifiedFunction` corrupted the QuickJS refcount across sequential suspensions | `Aborted(Assertion failed: p->ref_count == 0, quickjs.c:5512)` / `memory access out of bounds`, **escaping try/catch and killing the host process** (4/4 runs) | Manual `newPromise` + pump loop (4/4 runs pass) |
+| **P0-2 (residual)** | A pure `await` loop that never calls a tool starves the shared event loop, so **no in-process timer can ever fire** | Script hung; a 20 s watchdog never returned | `hardIsolation` runs the sandbox in a **worker thread**; `worker.terminate()` is a real hard kill. Guarded by `test/worker-isolation.test.js` |
+| **P1** | `maxResultChars` capped only the **return value**; the `[Logs]` section was unbounded, so `for(...) console.log(...)` could flood the context past the advertised 50,000-char limit | Code inspection of `truncator.ts` | The cap is now applied to the whole rendered result |
+| **P2** | `test/bundle-declaration.test.js` **silently skipped on machines that do have DSH installed** — it read `start-dsh.ps1` as UTF-8, but that file is UTF-16LE (`FF FE`), so `$dshEntry` never matched | Test reported `skipped: 1` on a machine with the runtime present | BOM-aware read; the test now **fails loudly** if DSH is installed but the path cannot be derived, and only skips when `start-dsh.ps1` is absent |
 
 ---
 
@@ -206,6 +266,7 @@ Restart the DSH service from your desktop management console. The agent will imm
 |---|---|---|---|
 | `toolName` | `string` | `'codemode'` | Name of the tool declared to the LLM. |
 | `engine` | `'vm' \| 'quickjs'` | `'vm'` | Execution engine: high-throughput V8 VM or WASM sandbox. |
+| `hardIsolation` | `boolean` | `false` | Run the sandbox in a **worker thread** and kill it with `worker.terminate()`. Closes the one remaining hang class (a pure `await` loop that never calls a tool) and turns WASM-level crashes into clean failures. Costs one worker spawn per call. **Recommended for untrusted input** — see [Security Model](#-security-model). |
 | `maxResultChars` | `number` | `50000` | Maximum length of distilled output returned to context. |
 | `timeoutMs` | `number` | `60000` | Hard deadline per script before auto-termination. |
 | `injectGuidance` | `boolean` | `true` | Injects Code Mode orchestration tips into system prompt. |
@@ -260,11 +321,14 @@ auto effort with it. codemode is not involved either way.
 ```bash
 npm test
 ```
-Runs the unit suite (**10 cases**, `node --test test/*.test.js`):
+Runs the unit suite (**37 cases**, `node --test test/*.test.js`):
 - `sandbox.test.js` (4): basic evaluation and return values, `console.log`/`text()` capture, isolation (no Node process/filesystem leaks), hard timeout on infinite loops.
 - `bridge.test.js` (3): `Promise.all` parallel tool execution, rejection of recursive `codemode` calls, oversized-output truncation.
 - `apply-guard.test.js` (2): regression guards — `apply()` must never call `ctx.waterfall` (it is an emitter; doing so took the host down as fatal on 2026-10-03), and `apply()` no longer depends on the `llm`/`connection` services after auto-effort moved out.
-- `bundle-declaration.test.js` (1): the `dsh.bundle.patch` declaration is parsed correctly by the host (skipped when no DSH runtime is present).
+- `escape.test.js` (11): **escape guard** — 10 known `node:vm` prototype-chain vectors (`this.constructor.constructor`, `globalThis.constructor.constructor`, `Object.constructor`, `JSON.constructor.constructor`, `Promise.constructor.constructor`, `JSON.parse("{}").constructor.constructor`, `(await tools.read({})).constructor.constructor`, `(function(){}).constructor`, `[].constructor.constructor`, `String("").constructor.constructor`) must all fail to reach the host `process`, plus a host-process probe that must stay unreachable. Baseline before the 2026-10-14 fix: 3 pass / 8 fail.
+- `quickjs-tool-loop.test.js` (6): **QuickJS orchestration guard** — 1/2/3 suspend-resume cycles, a parallel batch, `seq + par + seq`, and a realistic 5-call read loop must all complete without killing the process. Baseline before the fix: the file crashed the test process outright.
+- `worker-isolation.test.js` (10): **hard-isolation guard** — tool calls, logs, parallel batches, error propagation and the `tools.list()`/`tools.help()` snapshot all work across the worker boundary; and three separate infinite-loop shapes (pure `await`, synchronous, `await` on a tool) are all killed inside the watchdog.
+- `bundle-declaration.test.js` (1): the `dsh.bundle.patch` declaration is parsed by the **real** host `bundlePatchPaths`; skips only when DSH is not installed at all.
 
 ---
 

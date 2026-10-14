@@ -43,7 +43,18 @@ export function formatExecutionResult(
     parts.push(`\n(No logs emitted and no return value)`);
   }
 
+  // ⚠ 2026-10-14 修复:原先 maxChars 只作用于**返回值**这一段,`[Logs]` 段完全不受限 ——
+  // 脚本里 `for(...) console.log(...)` 可以轻松产出数百 KB,绕过「输出上限 50,000 字符」
+  // 的承诺并把上下文冲爆。现在对**整段输出**收口。
   const fullText = parts.join('\n');
+  if (fullText.length > maxChars) {
+    const omitted = fullText.length - maxChars;
+    return {
+      text: `${fullText.slice(0, maxChars)}\n… [truncated: ${omitted} more characters]`,
+      isError: !outcome.success,
+    };
+  }
+
   return {
     text: fullText,
     isError: !outcome.success,

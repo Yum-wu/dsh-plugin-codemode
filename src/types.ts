@@ -34,6 +34,16 @@ export interface CodeModeConfig {
   toolName?: string;
   /** 沙箱执行引擎：'vm' (V8 原生高速隔离沙箱，默认) | 'quickjs' (WASM 纯内存沙箱) */
   engine?: 'vm' | 'quickjs';
+  /**
+   * 是否把沙箱放进独立 worker thread 执行（硬隔离），默认 false。
+   *
+   * - `true`  → 宿主用 `worker.terminate()` 兜底：沙箱内**任何形式**的死循环都能被杀，
+   *             包括同进程内杀不掉的「纯 `await` 紧循环」；WASM / QuickJS 级崩溃
+   *             也只死 worker，不影响 DSH 主进程。代价：每次调用多一次 worker 启动。
+   * - `false` → 同进程内执行，更快。注意：纯 `await` 紧循环（不调用任何工具）会饿死
+   *             宏任务队列，使宿主侧超时**结构性失效**，整个 DSH 进程挂死。
+   */
+  hardIsolation?: boolean;
   /** 返回给上下文的最大字符上限，超出截断，默认 50,000 */
   maxResultChars?: number;
   /** 单次脚本执行的硬超时（毫秒），默认 60,000 */
@@ -66,6 +76,8 @@ export interface ScriptExecutionOptions {
   script: string;
   bridge: ToolExecutionBridge;
   engine?: 'vm' | 'quickjs';
+  /** 见 CodeModeConfig.hardIsolation。true 时改走 worker thread + terminate() 硬杀。 */
+  hardIsolation?: boolean;
   maxResultChars?: number;
   timeoutMs?: number;
 }
