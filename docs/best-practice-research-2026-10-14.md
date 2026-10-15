@@ -41,12 +41,12 @@
 | **P1** | `maxResultChars` **只约束返回值那一段**,`[Logs]` 段完全不受限 —— `for(...) console.log(...)` 可轻松产出数百 KB,绕过 README 承诺的 50,000 字符上限 | 读 `truncator.ts` 源码确认 | 收口改为作用于**整段输出** |
 | **P2** | `test/bundle-declaration.test.js` **在装了 DSH 的机器上也静默 skip** | 本机实测 `skipped: 1` | 根因:`start-dsh.ps1` 是 **UTF-16LE(`FF FE` BOM)**,测试按 utf8 读 → 全是 U+FFFD → 正则匹配不到 `$dshEntry`。改为 **BOM 感知读取**;并把「没装 DSH → skip」与「装了却派生不出 → **响亮失败**」分开。现在真跑宿主 `bundlePatchPaths`,**1/1 通过** |
 
-⚠ **`hardIsolation` 默认 `false`** —— 这是刻意的:开启后每次调用多一次 worker 启动(数十毫秒),而且我**无法在活的 DSH 进程里验证 worker 入口路径**(本仓测试只覆盖沙箱函数,不覆盖插件在 DSH 内的装配)。要不要默认打开,是一个需要你在真实环境里试一次再拍的取舍,不该由我在测不到的地方替你定。
+⚠ **`hardIsolation` 插件缺省值仍为 `false`** —— 但 2026-10-15 已在**活的 DSH 进程内完成装配级实测**,原先「无法在活 DSH 里验证 worker 入口路径」的顾虑**已证伪**:正常脚本跑通、纯 `await` 紧循环 60.25s 被 `worker.terminate()` 硬杀且**会话未挂**。完整证据见 **§0b-3**。本机 web profile 已覆盖为 `true`;缺省值是否改成 `true` 仍留给你拍。
 
 ### 仍未修的(诚实列出)
 - **`node:vm` 仍不是安全边界**:10 条已知向量被堵住 ≠ 无未知向量。Node 官方口径不变。
-- **`hardIsolation` 默认关闭**:开着才有 worker 级硬杀。默认值见上一条说明。
-- **未量化 `hardIsolation` 的实际启动开销**(worker spawn 未单独 benchmark)。
+- **`hardIsolation` 插件缺省值仍为关闭**(本机 web profile 已显式覆盖为 `true`)。缺省取舍见上一条。
+- **未量化 `hardIsolation` 的实际启动开销** —— 2026-10-15 结论:**在现有工具面下不可分离测量**,依据见 §0b-3-B。
 
 **vm 功能回归 8/8 通过**(修复未破坏功能):返回值+工具调用 / `console.log` 捕获 / 并行工具调用 / `tools.list()` / `tools.help()` / 工具抛错被捕获 / 宿主内建(`Math`/`Date`/`Array.sort`/`Set`)仍可用 / 顶层 `await`。
 
@@ -62,8 +62,46 @@ manual      => 通过 4 / 崩溃 0     (newPromise + executePendingJobs 泵送)
 
 ### 仍未修的(诚实列出)
 - **`node:vm` 仍不是安全边界**:10 条已知向量被堵住 ≠ 无未知向量。Node 官方口径不变。
-- **`hardIsolation` 默认关闭**:开着才有 worker 级硬杀。默认值取舍见 0b-2 的说明。
-- **未量化 `hardIsolation` 的实际启动开销**(worker spawn 未单独 benchmark)。
+- **`hardIsolation` 插件缺省值仍为关闭**(本机 web profile 已显式覆盖为 `true`)。缺省取舍见 0b-2 的说明。
+- **未量化 `hardIsolation` 的实际启动开销** —— 结论是**在现有工具面下不可分离测量**,依据见 §0b-3-B。
+
+### 0b-3. 第三轮:活 DSH 装配级实测 + README 数字复核(2026-10-15)
+
+**A. `hardIsolation: true` 在活的 DSH 进程内实测**
+
+背景:worker 路径此前只在**仓内单测**里验过(`test/worker-isolation.test.js` 10/10),而单测覆盖的是沙箱函数、**不覆盖插件在 DSH 内的装配**(`new Worker(WORKER_ENTRY)` 的入口路径是否能在真实进程里解析到)。本轮在运行中的 DSH(运行时 `dsh-0.2.0-rc.2`,web profile)上补齐。
+
+配置面:`~/.dsh/profiles/web/cordis.patch.yml` **L44** = `hardIsolation: true`(同块 L34 `timeoutMs: 60000`);`~/.dsh/logs/dsh-err-*.log` 无 `did not activate` / `disabling profile plugin row`;宿主进程确于 05:16:50 重启。
+
+| # | 验证项 | 方法 | 结果 |
+|---|---|---|---|
+| ① | 正常路径(worker 内执行) | `1+1`、`[0..999]` 求和、`tools.list()` | `2` / `499500` / 360 工具 |
+| ② | **危险路径(核心)** | 纯 `await` 紧循环 `while(true){ await Promise.resolve(); }` | **60.25s** 后被硬杀,返回 `Script execution exceeded hard timeout limit of 60000ms (worker terminated)`;**会话未挂** |
+| ③ | 工具消息往返桥 | `tools.pwsh()` + `tools.read()` + `tools.glob()` 各一次 | 全通,586ms —— 走 `worker-entry.ts:52` 的 `executeTool` postMessage 往返,而非 `workerData` 同步快照 |
+| ④ | **路径唯一性(排除同进程)** | grep `worker terminated` | 全文**仅 `worker-sandbox.ts:57`** 一处;同进程三处(`sandbox.ts:24/62/157`)**均无**此后缀 |
+
+② 的 **60.25s** 与源码 `worker-sandbox.ts:53-60` 的 `setTimeout(…, timeoutMs + 250)` 精确吻合(60000 + 250);④ 证明 ② 走的确实是 worker 路径而非同进程路径 —— 两条独立证据同时成立。③ 是此前未覆盖的缺口:step ① 只用到 `workerData` 同步快照,往返桥坏掉时 `tools.*` 会全失效而 ① 照样通过。
+
+**B. worker 启动开销:结论是「不可分离测量」**
+
+原计划量化开启 `hardIsolation` 的每次调用代价,实测后判定**在现有工具面下做不到**,依据:
+
+- **正常返回**时 harness 显示的耗时来自 **worker 内** runner 的 `wallTimeMs`(`worker-entry.ts:75` → `sandbox.ts`),**不含** spawn。实测:最小脚本 `return 1` 被报为 `0.00s`。
+- **超时返回**时 `wallTimeMs` 取宿主侧 `Date.now() - startTime`(`worker-sandbox.ts:58`),但该路径由 `setTimeout(…, 60000 + 250)` 触发,读到的恒等于看门狗常量,**不含** spawn 信息。
+- ⇒ 要测必须给 `worker-entry` 增加一条回传宿主 `startTime` 的字段(改代码),本轮未做。
+
+**C. README benchmark 数字复核(§9-7 已闭)**
+
+用 `DeepSeekHarness/tests/benchmark-codemode-vs-react.mjs` 在 DSH 仓根重跑:
+
+| 指标 | 传统 ReAct | Code Mode | 提升 |
+|---|---|---|---|
+| 上下文数据量 | 414,346 字符 | 677 字符 | **99.8%**(612:1) |
+| 估算 tokens | ~129,483 | ~212 | **99.8%** |
+| 交互轮次 | 19 | 1 | −18 轮 |
+| 端到端 | ~47.5 s | ~2.5 s | 19× (**建模值**) |
+
+README 旧数字(215,011 字符 / 67,191 tokens / 99.7% / 318:1)是**同一语料的早期快照** —— `known-issues.md` 已从 131 KB 长到 **282,842 字符**。两处表述错误已修:① 「the repository's `docs/`」指的不是本插件仓,而是 **DeepSeekHarness 仓**(该仓 `docs/` 恰好 17 个 md,总 413,795 字符);② 复现命令缺仓名。两版 README(`README.md` / `README.zh.md`)已同步更新,并注明绝对值是**时点快照**、端到端耗时是**建模值**。
 
 ---
 
@@ -488,8 +526,9 @@ Worker thread  +  execArgv: ['--permission']  +  vm  +  resourceLimits
 3. 未读 CodeAct 论文**正文**(只取到摘要)
 4. 未取到 cymulate CBSE 与 pillar 两篇**正文**
 5. 未量化「工具定义全量注入」在 DSH 37 项核心工具下的实际 token 占比 —— 这决定 progressive discovery 值不值得抄
-6. `truncator.ts` 静默截断是否带「已截断」标记,未查
-7. **未复核 README 的 99.7% / 19× 数字**(需要 DSH 运行时环境跑 benchmark)
+6. ~~`truncator.ts` 静默截断是否带「已截断」标记,未查~~ → **已查(2026-10-15)**:带标记,`truncator.ts:39/53` 输出 `… [truncated: ${omitted} more characters]`
+7. ~~未复核 README 的 99.7% / 19× 数字~~ → **已复核并更新(2026-10-15)**,见 §0b-3-C
+8. **未量化 `hardIsolation` 的 worker 启动开销** —— 见 §0b-3-B,现有工具面下**不可分离测量**
 
 ---
 

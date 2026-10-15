@@ -15,18 +15,21 @@ Turn verbose O(N) multi-turn ReAct loops into a single O(1) JavaScript orchestra
 
 ## ⚡ The Benchmark: Hard Numbers
 
-Tested against **all 17 real markdown documents** in the repository's `docs/` folder (including a 131 KB operational ledger, totaling **215,011 raw characters**). The task: scan all documents, filter by keywords (`JEV`, `Polymarket`, `Architecture`), extract titles & line metrics, and return a sorted Top-5 summary JSON.
+**Measured 2026-10-15** against the **17 real markdown documents** in the *DeepSeekHarness* repository's `docs/` folder (including the 282,842-char operational ledger `known-issues.md`) — **414,346 raw characters** in total. The task: scan all documents, filter by keywords (`JEV`, `Polymarket`, `Architecture`), extract titles & line metrics, and return a sorted Top-5 summary JSON.
 
 | Metric | Traditional ReAct Loop | Code Mode (Sandbox Orchestration) | Measured Improvement |
 |---|---|---|---|
-| **Data Loaded into Context** | 215,011 chars | **676 chars** | **99.7% Reduction** (318:1 distillation) |
-| **Estimated Input Tokens** | ~67,191 tokens | **~211 tokens** | **99.7% Saved** (67k tokens spared) |
+| **Data Loaded into Context** | 414,346 chars | **677 chars** | **99.8% Reduction** (612:1 distillation) |
+| **Estimated Input Tokens** | ~129,483 tokens | **~212 tokens** | **99.8% Saved** (129k tokens spared) |
 | **Agent / LLM Turns** | 19 round trips | **1 turn** | **94.7% Fewer Turns** (18 turns eliminated) |
-| **Local I/O & Compute Time** | 3.94 ms | **2.76 ms** | Parity (sub-3ms execution) |
 | **End-to-End Elapsed Time** | ~47.5 s (at 2.5s / LLM turn) | **~2.5 s** | **19× Faster** (94.7% latency drop) |
 | **Computation Accuracy** | Prone to LLM counting hallucinations | Native JS `Array.filter().sort()` | **100% Deterministic & Accurate** |
 
-> *Reproduce locally: `node tests/benchmark-codemode-vs-react.mjs`*
+> ⚠ **The absolute figures are a dated snapshot, not a constant.** The corpus keeps growing — it was **215,011 chars** when this table was first written, and is **414,346** as of 2026-10-15. The *ratios* are the stable part; refresh the absolutes by re-running:
+>
+> `node <DeepSeekHarness>/tests/benchmark-codemode-vs-react.mjs` — from the **DeepSeekHarness repo root**, because the corpus is **that** repo's `docs/`, not this plugin's (this plugin's own `docs/` holds a single file).
+>
+> `End-to-End Elapsed Time` is **modelled** (19 turns × 2.5 s/turn assumed), not stopwatch-measured.
 
 ---
 
